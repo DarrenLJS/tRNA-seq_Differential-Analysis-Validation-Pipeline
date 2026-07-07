@@ -1,0 +1,19 @@
+name: stage2_r_stats
+channels:
+  - conda-forge
+  - bioconda
+  - r
+dependencies:
+  - r-base>=4.3
+  - bioconductor-deseq2>=1.42
+  - bioconductor-edger>=4.0
+  - bioconductor-limma          # edgeR's voom/glm helpers pull this in anyway
+  - r-emmeans                   # used for wobble GLM contrasts (I34/Q34)
+  - r-ggplot2
+  - r-dplyr
+  - r-tidyr
+  - r-readr
+  - r-tibble
+  - r-broom                     # tidy() output from lm()/glm() for pretrna_ratio_lm.R
+  - r-optparse                  # CLI arg parsing for Rscript-invoked scripts
+  - r-jsonlite

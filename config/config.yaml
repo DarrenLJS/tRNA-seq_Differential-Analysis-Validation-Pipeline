@@ -1,0 +1,178 @@
+# =============================================================================
+# config/config_stage2.yaml
+# All tunable parameters and file paths for the Stage-2 pipeline.
+#
+# Stage 2 is CHAINED to Stage 1: it never re-runs alignment, mim-tRNAseq, or
+# TRAX. It reads directly from Stage 1's `scratch` tree (same manifest, same
+# SCRATCH root) and writes its own outputs under `{scratch}/stage2/`.
+#
+# Copy the relevant paths below from Stage 1's config_eddie.yaml — they MUST
+# point at the same manifest and scratch root Stage 1 used, or the DAG will
+# not find its inputs.
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Core paths — copied from Stage 1's config_eddie.yaml (keep in sync)
+# ---------------------------------------------------------------------------
+manifest: "/exports/eddie/scratch/s2906787/snakemake_pipeline/sample_manifest.tsv"
+scratch:  "/exports/eddie/scratch/s2906787"
+
+# Stage 2 writes everything under {scratch}/stage2/ so it never collides
+# with or overwrites any Stage-1 output directory.
+stage2_root: "{scratch}/stage2"
+
+# ---------------------------------------------------------------------------
+# Stage-1 reference paths this pipeline reads from (read-only)
+# ---------------------------------------------------------------------------
+references:
+  anticodon_map:  "/exports/eddie/scratch/s2906787/references/hg38_tRNA_anticodon_map.tsv"
+  gtrndb_bed:     "/exports/eddie/scratch/s2906787/references/hg38-tRNAs_nochr.bed"
+  gtrndb_detailed_out: "/exports/eddie/scratch/s2906787/references/hg38-tRNAs-detailed.out"
+  pretRNA_fasta_spliced: "/exports/eddie/scratch/s2906787/references/hg38_pretRNA_spliced.fa"
+  ensembl_gtf:    "/exports/eddie/scratch/s2906787/references/Homo_sapiens.GRCh38.109.gtf.gz"
+  genome_fasta:   "/exports/eddie/scratch/s2906787/references/GRCh38.primary_assembly.genome.fa"
+  genome_fai:     "/exports/eddie/scratch/s2906787/references/GRCh38.primary_assembly.genome.fa.fai"
+
+# ---------------------------------------------------------------------------
+# Stage-2-only external reference data (fetched/built by rule 09)
+# ---------------------------------------------------------------------------
+stage2_references:
+  # GEO GSE130618 (Watson et al. 2020) — superseries, polysome-seq + total
+  # RNA-seq. rule fetch_watson_polysome_data tries the GEO processed series
+  # matrix first, falls back to the NAR supplementary ZIP if gene-level
+  # translational-efficiency fold changes aren't directly present in GEO.
+  # NEEDS SCOPING CHECK against real GEO output before first full run —
+  # see FIX note in fetch_watson_polysome_data.py.
+  watson_geo_accession: "GSE130618"
+  watson_nar_supp_url:  ""   # TODO: fill in once the exact NAR supplementary
+                              # file URL is confirmed (see rule 09 docstring)
+
+  isg_list_source:          "interferome"   # Interferome DB, human, IFN-stimulated
+  housekeeping_list_source: "eisenberg_levanon_2013"
+
+# ---------------------------------------------------------------------------
+# Wobble modification GLM parameters (rule 11)
+# ---------------------------------------------------------------------------
+wobble_glm:
+  fdr_threshold: 0.05
+  # I34: canonical A34-eligible amino-acid families (8 canonical isotypes).
+  # This is the EXPLICIT WHITELIST driving rule 09's decoding table — do not
+  # derive membership from anticodon pattern-matching (e.g. "starts with A")
+  # at runtime; Cys-ACA is A34 but is NOT an I34 substrate, so pattern
+  # matching alone is wrong. See build_decoding_whitelist.py.
+  i34_isotypes: ["Ala", "Arg", "Leu", "Pro", "Ser", "Thr", "Val", "Ile"]
+
+  # Q34: canonical G-U-N-anticodon substrates only (position 35 = U).
+  # Cys-GCA is G34 but position 35 = C, and is explicitly NOT a Q34
+  # substrate — must be excluded by whitelist, not caught by "starts with G".
+  q34_isotypes: ["Asp", "Asn", "His", "Tyr"]
+
+  # Q34 confidence dial (see 09/14 docstrings + proposal discussion).
+  # Default 0 = ignore Q34 signal in Delta(c) until the kappa sweep in
+  # rule 16 empirically justifies a nonzero value. This is a deliberate,
+  # defensible default given known low sensitivity of standard-RT
+  # misincorporation for queuosine (~1% ceiling vs I34's ~100%).
+  kappa_default: 0.0
+  kappa_sweep:   [0.0, 0.1, 0.2, 0.3, 0.5, 0.7, 1.0]
+
+# ---------------------------------------------------------------------------
+# Differential abundance parameters (rule 10)
+# ---------------------------------------------------------------------------
+diff_abundance:
+  fdr_threshold:        0.05
+  min_replicate_r:      0.95   # same QC gate as Stage 1; timepoints below
+                                # this are flagged exploratory, not dropped
+  lrt_model:  "~ condition * timepoint"
+  pairwise_contrasts: "per_timepoint_stimulated_vs_control"
+
+# ---------------------------------------------------------------------------
+# Pre-tRNA:mature ratio parameters (rule 12)
+# ---------------------------------------------------------------------------
+pretrna_ratio:
+  min_locus_coverage: 10   # min combined (pre + mature) read depth per
+                            # locus per sample to include in the LM
+
+# ---------------------------------------------------------------------------
+# tRF differential abundance parameters (rule 13)
+# ---------------------------------------------------------------------------
+trf_diff_abundance:
+  fdr_threshold:  0.05
+  min_unique_cov: 3        # matches Stage 1's trax.min_unique_cov
+  trf_classes: ["5prime_tRF", "3prime_tRF", "i_tRF", "tiRNA"]
+
+# ---------------------------------------------------------------------------
+# Validation parameters (rule 16)
+# ---------------------------------------------------------------------------
+validation:
+  fisher_alpha:    0.05
+  spearman_alpha:  0.05
+
+# ---------------------------------------------------------------------------
+# Computational resources — same sge_extra() pattern as Stage 1.
+# ---------------------------------------------------------------------------
+resources:
+
+  reference_prep_stage2:
+    slots:        1
+    vmem_mb:      8000
+    runtime_min:  120
+
+  build_decoding_whitelist:
+    slots:        1
+    vmem_mb:      2000
+    runtime_min:  30
+
+  build_codon_usage_table:
+    slots:        1
+    vmem_mb:      8000
+    runtime_min:  60
+
+  deseq2_isodecoder:
+    slots:        1
+    vmem_mb:      8000
+    runtime_min:  60
+
+  edgeR_sensitivity_check:
+    slots:        1
+    vmem_mb:      8000
+    runtime_min:  60
+
+  wobble_glm:
+    slots:        1
+    vmem_mb:      8000
+    runtime_min:  60
+
+  pretrna_locus_counts:
+    slots:        4
+    vmem_mb:      8000
+    runtime_min:  120
+
+  pretrna_ratio_lm:
+    slots:        1
+    vmem_mb:      4000
+    runtime_min:  30
+
+  trf_diff_abundance:
+    slots:        1
+    vmem_mb:      8000
+    runtime_min:  60
+
+  percodon_score:
+    slots:        1
+    vmem_mb:      4000
+    runtime_min:  30
+
+  gene_translation_prediction:
+    slots:        1
+    vmem_mb:      8000
+    runtime_min:  60
+
+  validation:
+    slots:        1
+    vmem_mb:      4000
+    runtime_min:  30
+
+  cross_cell_line_concordance:
+    slots:        1
+    vmem_mb:      2000
+    runtime_min:  30
