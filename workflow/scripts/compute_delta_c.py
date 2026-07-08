@@ -24,21 +24,31 @@ version, not the original 3-term proposal formula):
 
 MISSING DATA HANDLING
 ----------------------
-An isodecoder can be whitelist-reachable for codon c but have no DESeq2
-result (filtered for low counts) or no GLM result (insufficient position-34
-coverage). Rather than silently treating a missing FC(i) as FC=1 (i.e. "no
-change", which would be a real assumption, not a neutral default), missing
-terms are DROPPED from the sum for that (codon, timepoint) and counted --
-Delta(c)'s output row reports how many of the whitelist's contributing
-isodecoders were actually usable, so a codon with 1/6 isodecoders covered
-is visibly less trustworthy than one with 6/6, rather than both looking
-like an equally solid number.
+An isodecoder can be whitelist-reachable for codon c but have no DESeq2 row
+in the high-confidence intersect (rule 10) -- either because it failed the
+DESeq2/edgeR significance-agreement filter, or was low-count-filtered
+upstream. This IS treated as FC(i)=1 (log2FoldChange=0, i.e. "no detected
+change") rather than dropped from the sum. This is a deliberate modelling
+assumption, not a neutral default -- "not significant" is being read as
+"assume no change" rather than "insufficient power to know." It is tracked
+separately from observed contributions: each Delta(c) row reports
+n_observed_isodecoders (real FC(i) used) vs n_imputed_isodecoders (FC=1
+assumed) vs n_reachable_isodecoders (whitelist total), so a codon resting
+entirely on imputed zeros is distinguishable from one backed by real
+fold-changes, rather than both silently looking like equally solid numbers.
+(Only FC(i) is imputed this way. I34/Q34 GLM f_stim/f_ctrl gaps are NOT
+imputed -- see below -- those reflect insufficient position-34 read
+coverage, a different failure mode from "not significant.")
 
-f_ctrl(i) == 0 or f_stim(i) == 0 edge case: the log ratio is undefined.
-Rather than crash or silently substitute a pseudocount that would bias
-small values, these are dropped with a logged note per isodecoder --
-pseudocount handling should happen upstream in the GLM fit (rule 11), not
-be invented here.
+f_ctrl(i) == 0 or f_stim(i) == 0 edge case, and missing GLM rows generally:
+the log ratio is undefined, or the modification-rate measurement simply
+doesn't exist for that isodecoder/timepoint. Rather than crash or silently
+substitute a pseudocount that would bias small values, these terms are
+DROPPED (not imputed) with a logged note per isodecoder -- pseudocount
+handling should happen upstream in the GLM fit (rule 11), not be invented
+here. Exception: for both_Q_C at kappa=0, the term mathematically reduces
+to log2(FC(i)) regardless of f_stim/f_ctrl (ratio**0 == 1), so it does NOT
+require a GLM row at all in that case -- see both_Q_C branch below.
 """
 
 import logging
@@ -105,30 +115,40 @@ def compute_delta_c(whitelist_path, fc_path, i34_glm_path, q34_glm_path, kappa, 
 
     results = []
     skip_log = []
+    impute_log = []
 
     for tp in timepoints:
         for codon in SENSE_CODONS:
             rows = whitelist[whitelist["codon"] == codon]
             contributions = []
             n_reachable = len(rows)
-            n_used = 0
+            n_observed = 0
+            n_imputed = 0
 
             for _, wr in rows.iterrows():
                 iso_id = wr["isodecoder_id"]
                 term_type = wr["term_type"]
 
                 key = (iso_id, tp)
-                if key not in fc_idx.index:
-                    skip_log.append(f"[{tp}] {codon}: {iso_id} ({term_type}) skipped -- no DESeq2 FC result (filtered/low count)")
-                    continue
-                FC_i = fc_idx.loc[key]
-                if not np.isfinite(FC_i) or FC_i <= 0:
-                    skip_log.append(f"[{tp}] {codon}: {iso_id} ({term_type}) skipped -- FC non-finite or <=0 ({FC_i})")
-                    continue
+                fc_imputed = key not in fc_idx.index
+                if fc_imputed:
+                    # Not in the high-confidence DESeq2/edgeR intersect (either
+                    # failed the significance-agreement filter, or low-count
+                    # filtered upstream). Imputed as FC=1 ("no detected
+                    # change") rather than dropped -- see MISSING DATA
+                    # HANDLING docstring for the reasoning and caveats.
+                    impute_log.append(f"[{tp}] {codon}: {iso_id} ({term_type}) FC imputed=1.0 -- not in high-confidence DESeq2/edgeR intersect")
+                    FC_i = 1.0
+                else:
+                    FC_i = fc_idx.loc[key]
+                    if not np.isfinite(FC_i) or FC_i <= 0:
+                        skip_log.append(f"[{tp}] {codon}: {iso_id} ({term_type}) skipped -- FC non-finite or <=0 ({FC_i})")
+                        continue
 
                 if term_type in ("canonical", "both_I", "both_Q_U"):
                     contributions.append(np.log2(FC_i))
-                    n_used += 1
+                    n_imputed += 1 if fc_imputed else 0
+                    n_observed += 0 if fc_imputed else 1
 
                 elif term_type == "mod_only_I":
                     if key not in i34_idx.index:
@@ -139,9 +159,22 @@ def compute_delta_c(whitelist_path, fc_path, i34_glm_path, q34_glm_path, kappa, 
                         skip_log.append(f"[{tp}] {codon}: {iso_id} (mod_only_I) skipped -- f_stim/f_ctrl invalid ({f_stim}, {f_ctrl})")
                         continue
                     contributions.append(np.log2(FC_i * (f_stim / f_ctrl)))
-                    n_used += 1
+                    n_imputed += 1 if fc_imputed else 0
+                    n_observed += 0 if fc_imputed else 1
 
                 elif term_type == "both_Q_C":
+                    # kappa=0 short-circuit FIRST: the term mathematically
+                    # reduces to log2(FC(i)) when kappa=0 ((ratio)**0 == 1)
+                    # and does not depend on f_stim/f_ctrl at all -- so it
+                    # must not require a Q34 GLM row to be present. Gating
+                    # on q34_idx membership before this check was the bug:
+                    # it silently dropped kappa=0 contributions purely for
+                    # lacking GLM coverage they never needed.
+                    if kappa == 0:
+                        contributions.append(np.log2(FC_i))
+                        n_imputed += 1 if fc_imputed else 0
+                        n_observed += 0 if fc_imputed else 1
+                        continue
                     if key not in q34_idx.index:
                         skip_log.append(f"[{tp}] {codon}: {iso_id} (both_Q_C) skipped -- no Q34 GLM result")
                         continue
@@ -149,19 +182,21 @@ def compute_delta_c(whitelist_path, fc_path, i34_glm_path, q34_glm_path, kappa, 
                     if not (np.isfinite(f_stim) and np.isfinite(f_ctrl)) or f_stim <= 0 or f_ctrl <= 0:
                         skip_log.append(f"[{tp}] {codon}: {iso_id} (both_Q_C) skipped -- f_stim/f_ctrl invalid ({f_stim}, {f_ctrl})")
                         continue
-                    if kappa == 0:
-                        contributions.append(np.log2(FC_i))  # (ratio)**0 == 1, collapses to plain FC term
-                    else:
-                        contributions.append(np.log2(FC_i * (f_stim / f_ctrl) ** kappa))
-                    n_used += 1
+                    contributions.append(np.log2(FC_i * (f_stim / f_ctrl) ** kappa))
+                    n_imputed += 1 if fc_imputed else 0
+                    n_observed += 0 if fc_imputed else 1
 
                 else:
                     raise ValueError(f"Unrecognised term_type '{term_type}' in whitelist row for {iso_id}/{codon}")
 
+            n_used = n_observed + n_imputed
             delta_c = float(np.sum(contributions)) if contributions else np.nan
             results.append(dict(
                 timepoint=tp, codon=codon, delta_c=delta_c,
-                n_reachable_isodecoders=n_reachable, n_used_isodecoders=n_used,
+                n_reachable_isodecoders=n_reachable,
+                n_observed_isodecoders=n_observed,
+                n_imputed_isodecoders=n_imputed,
+                n_used_isodecoders=n_used,
                 kappa=kappa,
             ))
 
@@ -170,20 +205,29 @@ def compute_delta_c(whitelist_path, fc_path, i34_glm_path, q34_glm_path, kappa, 
 
     n_undefined = out["delta_c"].isna().sum()
     n_partial = ((out["n_used_isodecoders"] < out["n_reachable_isodecoders"]) & (out["n_used_isodecoders"] > 0)).sum()
+    n_fully_imputed = ((out["n_observed_isodecoders"] == 0) & (out["n_imputed_isodecoders"] > 0)).sum()
     log.info(f"Wrote Delta(c): {len(out)} (timepoint, codon) rows -> {out_path}")
     log.info(f"Undefined Delta(c) (zero usable isodecoders): {n_undefined}")
     log.info(f"Partially-covered Delta(c) (some but not all whitelist isodecoders usable): {n_partial}")
+    log.info(f"Fully-imputed Delta(c) (no real FC observed, resting entirely on FC=1 imputation): {n_fully_imputed}")
+    log.info(f"FC(i) values imputed as 1.0 (not in high-confidence DESeq2/edgeR intersect): {len(impute_log)}")
 
     if log_path:
         with open(log_path, "w") as fh:
             fh.write(f"Delta(c) computation summary (kappa={kappa})\n")
             fh.write(f"Timepoints: {timepoints}\n")
             fh.write(f"Undefined Delta(c) rows: {n_undefined}\n")
-            fh.write(f"Partially-covered Delta(c) rows: {n_partial}\n\n")
-            fh.write("Per-isodecoder skip reasons:\n")
+            fh.write(f"Partially-covered Delta(c) rows: {n_partial}\n")
+            fh.write(f"Fully-imputed Delta(c) rows (no real FC observed at all): {n_fully_imputed}\n")
+            fh.write(f"Total FC(i) imputations (FC=1, not in high-confidence intersect): {len(impute_log)}\n\n")
+            fh.write("Per-isodecoder skip reasons (GLM missing/invalid -- NOT imputed):\n")
             fh.write("\n".join(skip_log[:2000]))  # cap to avoid unbounded log files
             if len(skip_log) > 2000:
                 fh.write(f"\n... ({len(skip_log) - 2000} more skip entries truncated)\n")
+            fh.write("\n\nPer-isodecoder FC imputations (FC=1 assumed -- not in high-confidence intersect):\n")
+            fh.write("\n".join(impute_log[:2000]))
+            if len(impute_log) > 2000:
+                fh.write(f"\n... ({len(impute_log) - 2000} more imputation entries truncated)\n")
 
     return out
 
