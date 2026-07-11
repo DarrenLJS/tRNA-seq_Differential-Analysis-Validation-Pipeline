@@ -34,6 +34,6 @@ rule cross_cell_line_concordance:
     resources:
         sge_extra = sge_extra("cross_cell_line_concordance"),
     conda:
-        os.path.join(STAGE1_ENV_DIR, "environment.yaml")
+        "../../envs/stage2_python.yaml"
     script:
         "../scripts/cross_cell_line_concordance.py"

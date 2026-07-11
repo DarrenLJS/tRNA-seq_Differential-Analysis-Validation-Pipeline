@@ -33,7 +33,7 @@ rule parse_trax_trf_classes:
     resources:
         sge_extra = sge_extra("trf_diff_abundance"),
     conda:
-        os.path.join(STAGE1_ENV_DIR, "environment.yaml")
+        "../../envs/stage2_python.yaml"
     script:
         "../scripts/parse_trax_tRF_classes.py"
 

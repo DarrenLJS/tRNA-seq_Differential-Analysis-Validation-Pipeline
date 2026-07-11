@@ -63,8 +63,11 @@ for (gene in present) {
     if (is.null(tt)) next
     results[[length(results) + 1]] <- data.frame(
       gene = gene, timepoint = tp,
+      # NOTE: condition labels are "control"/"polyIC" per sample_manifest.tsv,
+      # not "stimulated" -- see the same fix in wobble_glm.R and
+      # intersect_deseq2_edgeR.py.
       mean_control = mean(vals[cond == "control"]),
-      mean_stimulated = mean(vals[cond == "stimulated"]),
+      mean_polyIC = mean(vals[cond == "polyIC"]),
       pvalue = tt$p.value
     )
   }

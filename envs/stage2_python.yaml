@@ -1,0 +1,21 @@
+name: stage2_python
+channels:
+  - bioconda
+  - conda-forge
+  - defaults
+dependencies:
+  # ── Core Python data stack ────────────────────────────────────────────
+  # Covers build_decoding_whitelist.py, build_codon_usage_table.py,
+  # fetch_isg_housekeeping_lists.py, fetch_watson_polysome_data.py,
+  # intersect_deseq2_edgeR.py, pretrna_locus_counts.py,
+  # parse_trax_tRF_classes.py, compute_delta_c.py,
+  # gene_translation_prediction.py, cross_cell_line_concordance.py
+  - python>=3.10
+  - pandas>=2.0
+  - numpy>=1.24
+  - scipy>=1.11        # intersect_deseq2_edgeR.py (pearsonr), cross_cell_line_concordance.py (spearmanr)
+  - requests>=2.31      # fetch_isg_housekeeping_lists.py, fetch_watson_polysome_data.py
+
+  # ── CLI tools invoked via subprocess ──────────────────────────────────
+  - gffread              # build_codon_usage_table.py (CDS extraction)
+  - subread              # pretrna_locus_counts.py (featureCounts)

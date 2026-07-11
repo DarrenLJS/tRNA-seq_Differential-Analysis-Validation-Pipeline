@@ -66,7 +66,11 @@ def intersect_calls(deseq2_path, edgeR_path, counts_path, coldata_path, fdr, min
 
     replicate_r = compute_replicate_r(counts_path, coldata_path)
     def qc_flag(row):
-        r_stim = replicate_r.get((row["timepoint"], "stimulated"), np.nan)
+        # NOTE: condition labels come from sample_manifest.tsv, which uses
+        # "control"/"polyIC" (confirmed against the real Stage 1 manifest),
+        # not "stimulated" -- using the wrong label here silently returned
+        # NaN for every stimulated-condition lookup rather than crashing.
+        r_stim = replicate_r.get((row["timepoint"], "polyIC"), np.nan)
         r_ctrl = replicate_r.get((row["timepoint"], "control"), np.nan)
         worst = np.nanmin([r_stim, r_ctrl]) if not (np.isnan(r_stim) and np.isnan(r_ctrl)) else np.nan
         if np.isnan(worst):

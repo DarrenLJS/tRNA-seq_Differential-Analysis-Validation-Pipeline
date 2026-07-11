@@ -104,13 +104,23 @@ for (iso in target_isodecoders) {
     # project discussion: this is a point-estimate stoichiometry, not a
     # probability distribution -- treated as such downstream in
     # compute_delta_c.py, which consumes it as f_stim/f_ctrl directly).
-    stim_row <- em_df[em_df$condition == "stimulated", ]
+    # NOTE: condition labels come from sample_manifest.tsv, which uses
+    # "control"/"polyIC" (confirmed against the real Stage 1 manifest), not
+    # "stimulated" -- the previous "stimulated" label matched zero rows for
+    # EVERY isodecoder/timepoint, so every iteration silently hit the `next`
+    # below and the whole rule produced an effectively empty results file
+    # rather than erroring loudly.
+    stim_row <- em_df[em_df$condition == "polyIC", ]
     ctrl_row <- em_df[em_df$condition == "control", ]
     if (nrow(stim_row) == 0 || nrow(ctrl_row) == 0) next
 
+    # No relevel() is applied anywhere in this pipeline, so glm()/factor()
+    # use R's default alphabetical reference level: "control" < "polyIC",
+    # so "control" is the reference and the non-reference dummy coefficient
+    # is named "conditionpolyIC", not "conditionstimulated".
     pval <- tryCatch({
       s <- summary(fit)
-      s$coefficients["conditionstimulated", "Pr(>|z|)"]
+      s$coefficients["conditionpolyIC", "Pr(>|z|)"]
     }, error = function(e) NA_real_)
 
     results[[length(results) + 1]] <- data.frame(

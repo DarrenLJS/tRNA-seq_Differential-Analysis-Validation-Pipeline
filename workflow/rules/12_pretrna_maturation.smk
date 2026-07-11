@@ -47,7 +47,7 @@ rule pretrna_locus_counts:
     resources:
         sge_extra = sge_extra("pretrna_locus_counts"),
     conda:
-        os.path.join(STAGE1_ENV_DIR, "environment.yaml")
+        "../../envs/stage2_python.yaml"
     script:
         "../scripts/pretrna_locus_counts.py"
 

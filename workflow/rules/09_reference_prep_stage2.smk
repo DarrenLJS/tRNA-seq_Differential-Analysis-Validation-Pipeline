@@ -33,7 +33,7 @@ rule build_decoding_whitelist:
     resources:
         sge_extra = sge_extra("build_decoding_whitelist"),
     conda:
-        os.path.join(STAGE1_ENV_DIR, "environment.yaml")
+        "../../envs/stage2_python.yaml"
     script:
         "../scripts/build_decoding_whitelist.py"
 
@@ -63,7 +63,7 @@ rule build_codon_usage_table:
     resources:
         sge_extra = sge_extra("build_codon_usage_table"),
     conda:
-        os.path.join(STAGE1_ENV_DIR, "environment.yaml")
+        "../../envs/stage2_python.yaml"
     script:
         "../scripts/build_codon_usage_table.py"
 
@@ -92,7 +92,7 @@ rule fetch_isg_housekeeping_lists:
     resources:
         sge_extra = sge_extra("reference_prep_stage2"),
     conda:
-        os.path.join(STAGE1_ENV_DIR, "environment.yaml")
+        "../../envs/stage2_python.yaml"
     script:
         "../scripts/fetch_isg_housekeeping_lists.py"
 
@@ -129,6 +129,6 @@ rule fetch_watson_polysome_data:
     resources:
         sge_extra = sge_extra("reference_prep_stage2"),
     conda:
-        os.path.join(STAGE1_ENV_DIR, "environment.yaml")
+        "../../envs/stage2_python.yaml"
     script:
         "../scripts/fetch_watson_polysome_data.py"

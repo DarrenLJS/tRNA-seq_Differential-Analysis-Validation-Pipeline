@@ -100,6 +100,6 @@ rule intersect_deseq2_edgeR:
     resources:
         sge_extra = sge_extra("edgeR_sensitivity_check"),
     conda:
-        os.path.join(STAGE1_ENV_DIR, "environment.yaml")
+        "../../envs/stage2_python.yaml"
     script:
         "../scripts/intersect_deseq2_edgeR.py"

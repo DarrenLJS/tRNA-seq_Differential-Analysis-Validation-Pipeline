@@ -28,6 +28,6 @@ rule compute_delta_c:
     resources:
         sge_extra = sge_extra("percodon_score"),
     conda:
-        os.path.join(STAGE1_ENV_DIR, "environment.yaml")
+        "../../envs/stage2_python.yaml"
     script:
         "../scripts/compute_delta_c.py"

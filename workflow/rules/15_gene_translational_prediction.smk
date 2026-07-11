@@ -17,6 +17,6 @@ rule gene_translation_prediction:
     resources:
         sge_extra = sge_extra("gene_translation_prediction"),
     conda:
-        os.path.join(STAGE1_ENV_DIR, "environment.yaml")
+        "../../envs/stage2_python.yaml"
     script:
         "../scripts/gene_translation_prediction.py"

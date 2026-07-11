@@ -2,120 +2,147 @@
 workflow/scripts/parse_trax_tRF_classes.py
 
 Parses TRAX's per-cell-line normalized read count table into separate
-5'-tRF / 3'-tRF / i-tRF / tiRNA count matrices for rule deseq2_trf.
+5'-tRF / 3'-tRF / i-tRF count matrices for rule deseq2_trf.
 
-DESIGNED AGAINST DOCUMENTATION, NOT A REAL FILE -- flagged explicitly in
-the rule docstring. TRAX's read-count output typically includes a
-fragment-type or feature-name column that encodes the tRF class (e.g. via
-a suffix or prefix in the feature name -- conventions have varied across
-TRAX versions between something like "trf5", "trf3", "trf-1", "itrf",
-"tirna" substrings in a `Feature`/`type` column, or embedded in the
-feature ID itself). Since the exact TRAX version's output schema was not
-available to inspect while building this pipeline, this parser tries
-several detection strategies in order and logs which one succeeded, so a
-human can verify the classification is actually correct against real
-output before trusting deseq2_trf's results.
+CONFIRMED against the real file (A549-normalizedreadcounts.txt /
+THP1-normalizedreadcounts.txt). Two things the original guessed-pattern
+version got wrong, both now fixed:
 
-If ALL detection strategies fail to find a usable class signal, this
-script raises rather than silently producing an empty/wrong classification
--- a loud failure here is much cheaper to fix than a downstream DESeq2 run
-on garbage class assignments.
+1. FILE FORMAT: TRAX writes this file R-style -- the header row has one
+   fewer field than the data rows (feature ID column is unlabeled row
+   names). pandas' default read_csv auto-detects this and puts the
+   feature ID into the DataFrame's INDEX, not into any column. The
+   previous version searched df.columns for an ID-like column name,
+   found none, and silently fell back to df.columns[0] -- which is
+   actually the first SAMPLE's read counts, not feature IDs. That's why
+   classification failed on every row: it was pattern-matching numbers,
+   not strings.
+
+2. CLASS VOCABULARY: the feature ID itself carries the class as a fixed
+   suffix, e.g. "tRNA-Ala-AGC-1_fiveprime". The real suffix vocabulary is
+   exactly five values -- wholecounts, fiveprime, threeprime, other,
+   antisense -- not the "trf5"/"5-half"/"itrf"/"tirna"-style substrings
+   originally guessed. Mapping to this pipeline's class names
+   (config trf_diff_abundance.trf_classes):
+     fiveprime   -> 5prime_tRF
+     threeprime  -> 3prime_tRF
+     other       -> i_tRF        (TRAX's "other" bucket is internal-fragment
+                                   reads that don't fit the 5'/3'-end
+                                   windows -- the closest real-data match
+                                   to i-tRF)
+     wholecounts -> excluded (full-length tRNA reads, not a fragment)
+     antisense   -> excluded (antisense-mapping reads, QC/noise category)
+
+   TRAX's default output has NO dedicated tiRNA (stress-induced tRNA
+   half) category -- tiRNAs are ~30-40nt halves and tRFs are ~14-30nt
+   fragments, a length distinction TRAX does not encode in this file at
+   all (it would require joining against a read-length distribution,
+   e.g. *-readlengths.txt, which is a separate design decision outside
+   this fix's scope). If "tiRNA" is requested in
+   trf_diff_abundance.trf_classes, this script writes an empty matrix for
+   it (consistent with the pre-existing "no rows classified" fallback)
+   and logs a clear, loud warning rather than silently guessing a length
+   cutoff -- decide separately whether a length-based tiRNA split is
+   actually needed before trusting any tiRNA-labelled output downstream.
 """
 
 import logging
+
 import os
-import re
 
 import pandas as pd
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 log = logging.getLogger(__name__)
 
-# Class name -> regex patterns tried against column names / feature-ID
-# strings, in order. FIX once real TRAX output is inspected -- these are
-# best-guess patterns based on TRAX's documented naming conventions, not
-# confirmed against a live file.
-CLASS_PATTERNS = {
-    "5prime_tRF": [r"\btrf.?5\b", r"\b5.?trf\b", r"5[-_]?half", r"5p.?tRF"],
-    "3prime_tRF": [r"\btrf.?3\b", r"\b3.?trf\b", r"3[-_]?half", r"3p.?tRF"],
-    "i_tRF":      [r"\bi.?trf\b", r"internal.?trf"],
-    "tiRNA":      [r"\btirna\b", r"tRNA.?halves?", r"stress.?induced"],
+# TRAX's real, fixed suffix vocabulary (confirmed against
+# A549-normalizedreadcounts.txt / THP1-normalizedreadcounts.txt), mapped
+# to this pipeline's class names. Not all TRAX suffixes are tRF classes:
+# wholecounts and antisense are deliberately excluded (see module
+# docstring). tiRNA has no TRAX-native suffix at all -- it is NOT a key
+# in this map, and is handled as an explicit empty-matrix case below if
+# requested in config.
+TRAX_SUFFIX_TO_CLASS = {
+    "fiveprime":  "5prime_tRF",
+    "threeprime": "3prime_tRF",
+    "other":      "i_tRF",
 }
+EXCLUDED_TRAX_SUFFIXES = {"wholecounts", "antisense"}
 
 
-def _detect_class_column(df):
-    """Look for a column whose name itself suggests fragment type/class."""
-    candidates = [c for c in df.columns if re.search(r"type|class|feature|fragment", c, re.IGNORECASE)]
-    return candidates
-
-
-def _classify_by_feature_id(feature_id):
-    for cls, patterns in CLASS_PATTERNS.items():
-        for pat in patterns:
-            if re.search(pat, str(feature_id), re.IGNORECASE):
-                return cls
-    return None
+def _classify_by_suffix(feature_id):
+    """
+    Deterministic classification: TRAX feature IDs are
+    "{locus}_{suffix}" where suffix is exactly one of wholecounts /
+    fiveprime / threeprime / other / antisense. Split on the last
+    underscore and look up the suffix directly -- no regex guessing.
+    """
+    suffix = str(feature_id).rsplit("_", 1)[-1]
+    if suffix in TRAX_SUFFIX_TO_CLASS:
+        return TRAX_SUFFIX_TO_CLASS[suffix]
+    return None  # covers EXCLUDED_TRAX_SUFFIXES and any unrecognised suffix
 
 
 def parse_trf_classes(readcounts_path, trf_classes, min_unique_cov, out_dir):
     os.makedirs(out_dir, exist_ok=True)
-    df = pd.read_csv(readcounts_path, sep="\t")
-    log.info(f"Loaded TRAX readcounts: {df.shape[0]} rows x {df.shape[1]} cols. Columns: {list(df.columns)[:10]}...")
 
-    id_col_candidates = [c for c in df.columns if re.search(r"^(feature|id|name|gene)", c, re.IGNORECASE)]
-    if not id_col_candidates:
-        id_col = df.columns[0]
-        log.warning(f"No obvious ID column found by name; falling back to first column '{id_col}'")
-    else:
-        id_col = id_col_candidates[0]
-    log.info(f"Using '{id_col}' as feature ID column")
+    # TRAX writes this file R-style: the header row has one fewer field
+    # than the data rows, so pandas auto-detects the feature ID as the
+    # DataFrame's index rather than a column. Read explicitly with
+    # index_col=0 to make that intentional rather than relying on
+    # pandas' implicit fallback (which is what silently broke the
+    # previous version -- it never noticed the ID wasn't in df.columns
+    # at all).
+    df = pd.read_csv(readcounts_path, sep="\t", index_col=0)
+    log.info(f"Loaded TRAX readcounts: {df.shape[0]} rows x {df.shape[1]} samples. "
+             f"Sample columns: {list(df.columns)[:5]}...")
+    log.info(f"Feature ID index sample: {df.index[:5].tolist()}")
 
-    # ---- Strategy 1: dedicated class/type column ----
-    class_cols = _detect_class_column(df)
-    class_series = None
-    strategy_used = None
+    class_series = df.index.to_series().apply(_classify_by_suffix)
+    n_classified = class_series.notna().sum()
+    n_excluded = df.shape[0] - n_classified
 
-    if class_cols:
-        col = class_cols[0]
-        log.info(f"Strategy 1: found candidate class column '{col}', attempting pattern match on its values")
-        mapped = df[col].apply(_classify_by_feature_id)
-        if mapped.notna().sum() > 0:
-            class_series = mapped
-            strategy_used = f"class_column:{col}"
-
-    # ---- Strategy 2: classify from the feature ID string itself ----
-    if class_series is None or class_series.notna().sum() == 0:
-        log.info("Strategy 2: attempting classification directly from feature ID strings")
-        mapped = df[id_col].apply(_classify_by_feature_id)
-        if mapped.notna().sum() > 0:
-            class_series = mapped
-            strategy_used = f"feature_id_pattern:{id_col}"
-
-    if class_series is None or class_series.notna().sum() == 0:
+    if n_classified == 0:
         raise RuntimeError(
-            "Could not classify any rows into 5'-tRF/3'-tRF/i-tRF/tiRNA using either "
-            "a dedicated class column or feature-ID pattern matching. This TRAX "
-            "output's naming convention does not match any pattern in "
-            "CLASS_PATTERNS -- inspect the real file's columns/feature IDs "
-            f"(sample: {df[id_col].head(10).tolist()}) and update CLASS_PATTERNS "
-            "in parse_trax_tRF_classes.py accordingly. Refusing to proceed with an "
+            "Could not classify any rows by TRAX suffix (_fiveprime/_threeprime/"
+            "_other). This file's feature-ID naming convention does not match "
+            f"the expected TRAX format -- sample IDs seen: {df.index[:10].tolist()}. "
+            "Inspect the real file and update TRAX_SUFFIX_TO_CLASS in "
+            "parse_trax_tRF_classes.py accordingly. Refusing to proceed with an "
             "unclassified or garbage classification."
         )
 
-    log.info(f"Classification succeeded via: {strategy_used}")
-    df["_trf_class"] = class_series
-    n_classified = df["_trf_class"].notna().sum()
-    n_unclassified = df["_trf_class"].isna().sum()
-    log.info(f"Classified {n_classified}/{len(df)} rows; {n_unclassified} rows unclassified (dropped)")
-    log.info(f"Class breakdown:\n{df['_trf_class'].value_counts()}")
+    log.info(f"Classified {n_classified}/{df.shape[0]} rows by suffix; "
+             f"{n_excluded} rows excluded (wholecounts/antisense/unrecognised)")
+    log.info(f"Class breakdown:\n{class_series.value_counts()}")
 
-    sample_cols = [c for c in df.columns if c not in (id_col, "_trf_class") and c not in class_cols]
+    df["_trf_class"] = class_series
+    sample_cols = [c for c in df.columns if c != "_trf_class"]
+
 
     for cls in trf_classes:
+        if cls == "tiRNA":
+            log.warning(
+                "'tiRNA' was requested in trf_diff_abundance.trf_classes, but TRAX's "
+                "normalizedreadcounts.txt has NO tiRNA-specific category -- its "
+                "suffixes are wholecounts/fiveprime/threeprime/other/antisense only. "
+                "tiRNAs (~30-40nt halves) are not distinguished from tRFs (~14-30nt "
+                "fragments) here; that split would need a read-length-based filter "
+                "(e.g. against *-readlengths.txt), which this script does NOT "
+                "attempt. Writing an empty tiRNA matrix -- decide separately whether "
+                "a length-based tiRNA definition is actually needed before trusting "
+                "any tiRNA-labelled output downstream."
+            )
+            mat = pd.DataFrame(columns=sample_cols)
+            out_path = os.path.join(out_dir, f"{cls}_counts_matrix.tsv")
+            mat.to_csv(out_path, sep="\t")
+            log.info(f"Wrote {cls}: 0 features x {len(sample_cols)} samples (empty, by design) -> {out_path}")
+            continue
+
         sub = df[df["_trf_class"] == cls]
         if sub.empty:
             log.warning(f"No rows classified as '{cls}' -- writing empty matrix (deseq2_trf.R must handle this gracefully)")
-        mat = sub[[id_col] + sample_cols].set_index(id_col)
+        mat = sub[sample_cols]
         # min_unique_cov filter -- drop features with < threshold summed
         # count across all samples (proxy for "uniquely mapping reads"
         # threshold from Stage 1's trax.min_unique_cov; TRAX's own
@@ -125,8 +152,6 @@ def parse_trf_classes(readcounts_path, trf_classes, min_unique_cov, out_dir):
         out_path = os.path.join(out_dir, f"{cls}_counts_matrix.tsv")
         mat.to_csv(out_path, sep="\t")
         log.info(f"Wrote {cls}: {mat.shape[0]} features x {mat.shape[1]} samples -> {out_path}")
-
-    return strategy_used
 
 
 if __name__ == "__main__":
