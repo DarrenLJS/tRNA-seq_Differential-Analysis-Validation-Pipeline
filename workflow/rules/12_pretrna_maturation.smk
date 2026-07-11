@@ -11,18 +11,26 @@
 rule pretrna_locus_counts:
     """
     Per-locus read counts, mature (Pass-1 functional BAM) vs pre-tRNA
-    (Pass-2 BAM), for every sample of a cell line. Uses the GtRNAdb BED
-    (mature loci) and the pre-tRNA reference (pretRNA_fasta_spliced,
-    treated as its own set of "loci" via a BED derived from the same
-    FASTA headers) as featureCounts annotation.
+    (Pass-2 BAM), for every sample of a cell line.
 
-    FIX-check before first run: pretRNA_fasta_spliced's headers need a
-    BED-equivalent (whole-sequence-as-one-feature) annotation for
-    featureCounts -- not currently guaranteed to exist as a BED anywhere
-    in Stage 1's reference set. build_pretrna_locus_bed in
-    pretrna_locus_counts.py derives one from the FASTA index (.fai) if a
-    real BED isn't found; confirm coordinates make sense against a real
-    pre-tRNA reference before trusting the counts.
+    Mature-locus annotation is derived directly from functional_bams'
+    own BAM header (one whole-length SAF feature per @SQ contig), NOT
+    from the GtRNAdb genomic BED (config references.gtrndb_bed) -- that
+    BED describes hg38 genomic coordinates, but functional.bam is aligned
+    to a per-sequence mature-tRNA reference (mim-tRNAseq-style: one
+    contig per tRNA locus), so the two coordinate spaces never overlap.
+    Confirmed via samtools view -H against a real functional.bam: using
+    gtrndb_bed silently produced 0.0% assigned alignments for every
+    locus, every sample (featureCounts exits cleanly even when nothing
+    is assigned). See pretrna_locus_counts.py docstring for detail.
+
+    Pre-tRNA loci use pretRNA_fasta_spliced, treated as its own set of
+    "loci" via a SAF derived from the same FASTA headers (each FASTA
+    entry = one whole-sequence feature).
+
+    pretRNA.bam is genuinely paired-end (confirmed via samtools flagstat)
+    while functional.bam is single-end -- featureCounts is run with
+    -p --countReadPairs for the pre-tRNA pass only.
     """
     input:
         functional_bams = expand(
@@ -33,7 +41,6 @@ rule pretrna_locus_counts:
             f"{SCRATCH}/pass2_pretRNA/{{sample}}/{{sample}}.pretRNA.bam",
             sample=SAMPLES,
         ),
-        gtrndb_bed  = config["references"]["gtrndb_bed"],
         pretrna_fasta = config["references"]["pretRNA_fasta_spliced"],
     output:
         locus_counts = f"{STAGE2_ROOT}/pretrna_ratio/{{cell_line}}/locus_counts.tsv",

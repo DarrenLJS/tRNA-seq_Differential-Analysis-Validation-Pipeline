@@ -54,6 +54,18 @@ def intersect_calls(deseq2_path, edgeR_path, counts_path, coldata_path, fdr, min
     deseq2_pw = deseq2[deseq2["test"] == "pairwise_stim_vs_ctrl"].copy()
     deseq2_lrt = deseq2[deseq2["test"] == "LRT_condition_x_timepoint"].copy()
 
+    # FIX: deseq2's "timepoint" column is read as object/str by pd.read_csv
+    # because the *full* DESeq2 results file also contains the LRT row's
+    # literal "all_LRT" value -- pandas infers dtype from the whole column
+    # at parse time, before the test=="pairwise_stim_vs_ctrl" filter above
+    # ever runs. edgeR's results file has no such row, so its "timepoint"
+    # column is inferred as int64. Left unaddressed this breaks the merge
+    # below (str vs int64 key) -- coerce to int (not str) here so the
+    # dtype also matches coldata.tsv's native int64 "timepoint" column,
+    # which qc_flag()'s replicate_r dict lookup depends on further down.
+    deseq2_pw["timepoint"] = deseq2_pw["timepoint"].astype(int)
+    edgeR["timepoint"] = edgeR["timepoint"].astype(int)
+
     merged = deseq2_pw.merge(
         edgeR, on=["isodecoder_id", "timepoint"], suffixes=("_deseq2", "_edgeR"), how="inner"
     )

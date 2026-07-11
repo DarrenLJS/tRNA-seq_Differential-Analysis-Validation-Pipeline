@@ -12,16 +12,35 @@ correctly out of the box. Requires `featureCounts` on PATH -- part of the
 `subread` bioconda package; NOT currently declared in Stage 1's
 environment.yaml, add it if missing.
 
-FIX before first real run
---------------------------
-`pretRNA_fasta_spliced` (the Pass-2 reference) is a FASTA, and Stage 1's
-config does not confirm a matching BED/SAF annotation exists for it.
-`_derive_bed_from_fasta_index` below builds a whole-sequence-as-one-
-feature SAF from the FASTA's .fai index as a fallback -- this treats each
-pre-tRNA reference sequence as a single countable locus, which is
-reasonable IF each FASTA entry already corresponds to one tRNA locus
-(likely, given how Stage 1 built this reference), but confirm against the
-real file rather than assuming.
+FIXED (was: FIX before first real run)
+---------------------------------------
+Originally this built the mature-locus SAF from `gtrndb_bed`
+(hg38-tRNAs_nochr.bed), which is a GENOMIC hg38 coordinate BED. But
+Pass-1's `functional.bam` is NOT aligned to the hg38 genome -- its @SQ
+header shows one contig per individual mature tRNA sequence (e.g.
+`Homo_sapiens_tRNA-Ala-TGC-1-1`, length ~72-76bp), i.e. mim-tRNAseq-style
+mature-tRNA-space alignment. Genomic BED coordinates can never overlap
+that BAM's contigs -- featureCounts silently "succeeded" while assigning
+0.0% of every alignment, for every sample, every locus. Confirmed via
+`samtools view -H` on a real functional.bam vs the SAF actually produced.
+
+Fix: derive the mature-locus SAF directly from the functional BAM's own
+header (`_derive_saf_from_bam_header`), the same whole-sequence-as-one-
+-feature approach `_derive_saf_from_fasta_index` already used correctly
+for the pre-tRNA side. This guarantees the annotation always matches
+whatever space the BAM was actually aligned to, and removes the need for
+`gtrndb_bed` as an input to this rule entirely (it was never the right
+annotation source for functional.bam; if a true GtRNAdb genomic-BED-based
+count is wanted elsewhere, that's a separate rule against a
+genome-aligned BAM, not this one).
+
+Also fixed: Pass-2 `pretRNA.bam` files are genuinely paired-end
+(confirmed via `samtools flagstat` -- ~117M paired-in-sequencing reads,
+58.7M read1/58.7M read2), while Pass-1 `functional.bam` files are
+single-end (0 paired-in-sequencing). featureCounts was being run in
+single-end mode for both, which made it abort on the paired BAMs
+("Paired-end reads were detected in single-end read library"). Now passed
+`-p --countReadPairs` for the pre-tRNA (paired) pass only.
 """
 
 import logging
@@ -56,6 +75,34 @@ def _derive_saf_from_fasta_index(fasta_path, out_saf):
     return out_saf
 
 
+def _derive_saf_from_bam_header(bam_path, out_saf):
+    """
+    Build a minimal SAF treating each BAM reference contig (@SQ SN) as one
+    whole-length feature. Used for mature tRNA counting because
+    functional.bam is aligned to a mature-tRNA-sequence reference (one
+    contig per locus, e.g. mim-tRNAseq-style), NOT the hg38 genome --
+    genomic BED coordinates (gtrndb_bed) do not correspond to this BAM's
+    contig space at all, which previously produced 0 assigned alignments
+    for every locus/sample silently (featureCounts exits 0 even when it
+    assigns nothing).
+    """
+    if shutil.which("samtools") is None:
+        raise RuntimeError("samtools not found on PATH -- required to read the BAM header.")
+    header = subprocess.run(
+        ["samtools", "view", "-H", bam_path], check=True, capture_output=True, text=True
+    ).stdout
+
+    with open(out_saf, "w") as out:
+        out.write("GeneID\tChr\tStart\tEnd\tStrand\n")
+        for line in header.splitlines():
+            if not line.startswith("@SQ"):
+                continue
+            fields = dict(f.split(":", 1) for f in line.split("\t")[1:])
+            seq_id, length = fields["SN"], int(fields["LN"])
+            out.write(f"{seq_id}\t{seq_id}\t1\t{length}\t+\n")
+    return out_saf
+
+
 def _bed_to_saf(bed_path, out_saf):
     with open(bed_path) as fh, open(out_saf, "w") as out:
         out.write("GeneID\tChr\tStart\tEnd\tStrand\n")
@@ -70,7 +117,7 @@ def _bed_to_saf(bed_path, out_saf):
     return out_saf
 
 
-def run_featurecounts(bams, saf_path, out_path, threads=4):
+def run_featurecounts(bams, saf_path, out_path, threads=4, paired=False):
     if shutil.which("featureCounts") is None:
         raise RuntimeError(
             "featureCounts not found on PATH. Add `subread` to envs/environment.yaml "
@@ -82,23 +129,33 @@ def run_featurecounts(bams, saf_path, out_path, threads=4):
         "-M", "--fraction",  # count multimappers fractionally -- pre-tRNA loci
                               # are highly homologous, dropping multimappers
                               # entirely would bias counts low
-    ] + bams
+    ]
+    if paired:
+        # pretRNA.bam is genuinely paired-end (confirmed via samtools
+        # flagstat) -- without this, featureCounts detects PE reads in
+        # what it assumes is an SE library and aborts (exit 255).
+        cmd += ["-p", "--countReadPairs"]
+    cmd += bams
     log.info(f"Running: {' '.join(cmd)}")
     subprocess.run(cmd, check=True)
 
 
-def build_locus_counts(functional_bams, pretrna_bams, gtrndb_bed, pretrna_fasta,
+def build_locus_counts(functional_bams, pretrna_bams, pretrna_fasta,
                         samples, min_coverage, out_path, workdir):
     os.makedirs(workdir, exist_ok=True)
 
-    mature_saf = _bed_to_saf(gtrndb_bed, os.path.join(workdir, "mature_loci.saf"))
+    # Mature SAF comes from functional_bams' own header, not gtrndb_bed --
+    # see module docstring "FIXED" note. All functional_bams share the
+    # same reference (same Pass-1 alignment index), so the first one's
+    # header is representative of all of them.
+    mature_saf = _derive_saf_from_bam_header(functional_bams[0], os.path.join(workdir, "mature_loci.saf"))
     pretrna_saf = _derive_saf_from_fasta_index(pretrna_fasta, os.path.join(workdir, "pretrna_loci.saf"))
 
     mature_counts_raw = os.path.join(workdir, "mature_featurecounts.txt")
     pretrna_counts_raw = os.path.join(workdir, "pretrna_featurecounts.txt")
 
-    run_featurecounts(functional_bams, mature_saf, mature_counts_raw)
-    run_featurecounts(pretrna_bams, pretrna_saf, pretrna_counts_raw)
+    run_featurecounts(functional_bams, mature_saf, mature_counts_raw, paired=False)
+    run_featurecounts(pretrna_bams, pretrna_saf, pretrna_counts_raw, paired=True)
 
     mature = pd.read_csv(mature_counts_raw, sep="\t", comment="#")
     pretrna = pd.read_csv(pretrna_counts_raw, sep="\t", comment="#")
@@ -140,7 +197,6 @@ if __name__ == "__main__":
     build_locus_counts(
         functional_bams=list(snakemake.input.functional_bams),
         pretrna_bams=list(snakemake.input.pretrna_bams),
-        gtrndb_bed=snakemake.input.gtrndb_bed,
         pretrna_fasta=snakemake.input.pretrna_fasta,
         samples=list(snakemake.params.samples),
         min_coverage=snakemake.params.min_coverage,
