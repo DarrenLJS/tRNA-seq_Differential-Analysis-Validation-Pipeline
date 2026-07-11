@@ -14,7 +14,7 @@
 # ---------------------------------------------------------------------------
 # Core paths — copied from Stage 1's config_eddie.yaml (keep in sync)
 # ---------------------------------------------------------------------------
-manifest: "/exports/eddie/scratch/s2906787/snakemake_pipeline/sample_manifest.tsv"
+manifest: "sample_manifest.tsv"   # Stage 2's own copy, repo root -- see Snakefile comment. Not read from Stage 1's directory.
 scratch:  "/exports/eddie/scratch/s2906787"
 
 # Stage 2 writes everything under {scratch}/stage2/ so it never collides

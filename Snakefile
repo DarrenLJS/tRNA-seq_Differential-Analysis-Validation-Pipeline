@@ -24,10 +24,13 @@
 #
 # Conda environments
 # ------------------
-#   envs/r_stats.yaml — R stack (DESeq2, edgeR, GLM/emmeans, Fisher/Spearman).
-#   All Python-only rules (whitelist building, Delta(c), parsing) use Stage
-#   1's envs/environment.yaml directly (imported via relative path below) —
-#   NOT re-declared here, since Stage 2 never touches mimseq or TRAX.
+#   envs/r_stats.yaml     — R stack (DESeq2, edgeR, GLM/emmeans, Fisher/Spearman).
+#   envs/stage2_python.yaml — Stage-2-owned Python stack (pandas/numpy/scipy/
+#   requests, plus gffread and subread/featureCounts) for all Python-only
+#   rules (whitelist building, Delta(c), parsing, featureCounts). Kept
+#   entirely separate from Stage 1's environment.yaml so that Stage 2's
+#   dependencies can never trigger a rebuild/rerun of Stage 1's already-
+#   completed pipeline via Snakemake's software-env rerun trigger.
 #
 # Usage
 # -----
@@ -48,13 +51,6 @@ configfile: "config/config_stage2.yaml"
 SCRATCH      = config["scratch"]
 STAGE2_ROOT  = config["stage2_root"].format(scratch=SCRATCH)
 
-# Path to Stage 1's pipeline repo — used only to resolve the shared conda
-# env file by relative path; Stage 2 does not read or write any Stage-1
-# rule/script files.
-STAGE1_ENV_DIR = os.path.normpath(
-    os.path.join(workflow.basedir, "..", "tRNA-seq_Three-pass_Alignment_Snakemake_Pipeline-master", "envs")
-)
-
 
 # ---------------------------------------------------------------------------
 # SGE resource helper — identical pattern to Stage 1's Snakefile so that
@@ -70,12 +66,24 @@ def sge_extra(rule_name):
 
 
 # ---------------------------------------------------------------------------
-# Load sample manifest — SAME manifest Stage 1 used (chained, per project
-# decision). Reused verbatim so condition/timepoint/replicate design stays
-# identical across both stages.
+# Load sample manifest — Stage 2's OWN copy (sample_manifest.tsv at this
+# repo's root), not read from Stage 1's directory. This is a static,
+# hand-authored file (not a Stage 1 pipeline output), so Stage 2 keeps its
+# own copy rather than reaching across into Stage 1's repo for it. If the
+# manifest is ever updated (new samples, corrected metadata), re-copy it
+# here manually to keep both stages in sync -- Stage 2 does not read
+# Stage 1's copy at runtime.
+#
+# Resolved relative to this Snakefile's own directory (workflow.basedir)
+# rather than the current working directory, so this works regardless of
+# where `snakemake` is invoked from.
 # ---------------------------------------------------------------------------
+_manifest_path = config["manifest"]
+if not os.path.isabs(_manifest_path):
+    _manifest_path = os.path.join(workflow.basedir, _manifest_path)
+
 manifest = (
-    pd.read_csv(config["manifest"], sep="\t", index_col="sample_id")
+    pd.read_csv(_manifest_path, sep="\t", index_col="sample_id")
 )
 
 SAMPLES    = manifest.index.tolist()
