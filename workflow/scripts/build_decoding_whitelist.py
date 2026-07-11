@@ -96,13 +96,25 @@ not an oversight.
 
 INPUT
 -----
-anticodon_map (Stage 1 reference, read-only): expected to provide, per
-tRNA locus/isodecoder, at minimum an isotype/amino-acid column and an
-anticodon column (3-letter, DNA alphabet, 5'->3', e.g. "AGC"). Column
-names are auto-detected across a few common variants since the exact
-header wasn't confirmed against a real file when this script was written
--- see `_detect_columns()`. FIX at first real run if the file's actual
-header doesn't match any of the candidates tried.
+anticodon_map (Stage 1 reference, read-only): CONFIRMED against the real
+file (Stage 1 rule 00d, build_anticodon_map.py) to have exactly two
+columns -- `locus` and `anticodon` -- and no isotype/amino-acid column.
+Column names for these two are still auto-detected across a few candidate
+spellings for robustness (see `_detect_columns()`), but isotype is NOT
+read from a column at all: it is derived from the `locus` string itself
+via `_isotype_from_locus()`, mirroring the exact two parsing branches
+Stage 1's build_anticodon_map.py used to build this same locus/anticodon
+pairing in the first place:
+
+  New format (GtRNAdb 2.0): "tRNA-{AminoAcid}-{Anticodon}-{Family}-{Copy}"
+    e.g. "tRNA-Tyr-GTA-1-1" -> isotype = "Tyr"
+
+  Old format (fallback): "...-{AminoAcid}{Anticodon}" concatenated as the
+  last hyphen-delimited segment, e.g. "chr1.tRNA1-AlaAGC" -> isotype = "Ala"
+
+Any locus whose isotype can't be recovered by either branch is treated as
+unmappable (logged, demoted to the default bucket via the existing
+UNMAPPABLE_ISOTYPES-style handling) rather than crashing the whole build.
 
 OUTPUT
 ------
@@ -168,16 +180,25 @@ ISOTYPE_NORMALISE = {
 }
 UNMAPPABLE_ISOTYPES = {"SelCys", "Sec", "Supres"}
 
+# Sentinel isotype label used when _isotype_from_locus() can't recover an
+# amino acid from the locus string at all (neither parsing branch fires).
+# Routed through the existing UNMAPPABLE_ISOTYPES handling downstream so
+# these loci are excluded from the whitelist with a logged note, rather
+# than crashing the build or silently mis-bucketing them.
+ISOTYPE_UNPARSEABLE = "UNPARSEABLE"
+
 # Candidate column-name variants to try when reading the Stage-1
-# anticodon_map.tsv -- FIX to a single confirmed name once the real file
-# header is checked (see build_anticodon_map.py in Stage 1 rule 00d).
+# anticodon_map.tsv. CONFIRMED (Stage 1 rule 00d, build_anticodon_map.py)
+# to be just `locus` and `anticodon` in the real file -- no isotype column
+# exists there at all; isotype is derived separately, see
+# _isotype_from_locus() and its call site in build_whitelist().
 ISODECODER_ID_CANDIDATES = ["isodecoder_id", "locus", "locus_id", "tRNA_id", "gene_id", "name"]
-ISOTYPE_CANDIDATES       = ["isotype", "amino_acid", "aa", "AA"]
 ANTICODON_CANDIDATES     = ["anticodon", "anticodon_seq", "AC"]
 
 
 def _detect_columns(df):
-    """Auto-detect isodecoder_id / isotype / anticodon columns by name."""
+    """Auto-detect isodecoder_id / anticodon columns by name. Isotype is
+    not a column in the real anticodon_map.tsv -- see _isotype_from_locus()."""
     def pick(candidates, label):
         for c in candidates:
             if c in df.columns:
@@ -185,13 +206,39 @@ def _detect_columns(df):
         raise ValueError(
             f"Could not find a '{label}' column in anticodon_map among "
             f"candidates {candidates}. Actual columns present: {list(df.columns)}. "
-            f"Update ISODECODER_ID_CANDIDATES/ISOTYPE_CANDIDATES/ANTICODON_CANDIDATES "
+            f"Update ISODECODER_ID_CANDIDATES/ANTICODON_CANDIDATES "
             f"in build_decoding_whitelist.py to match the real file."
         )
     id_col   = pick(ISODECODER_ID_CANDIDATES, "isodecoder_id")
-    iso_col  = pick(ISOTYPE_CANDIDATES, "isotype")
     ac_col   = pick(ANTICODON_CANDIDATES, "anticodon")
-    return id_col, iso_col, ac_col
+    return id_col, ac_col
+
+
+def _isotype_from_locus(locus, anticodon):
+    """
+    Recover the isotype (amino acid) from the locus string, since
+    anticodon_map.tsv itself has no isotype column. Mirrors the exact two
+    parsing branches Stage 1's build_anticodon_map.py used to build this
+    same locus/anticodon pairing in the first place (rule 00d):
+
+    New format (GtRNAdb 2.0): "tRNA-{AminoAcid}-{Anticodon}-{Family}-{Copy}"
+      e.g. "tRNA-Tyr-GTA-1-1" -> isotype = parts[1] = "Tyr"
+
+    Old format (fallback): last hyphen-delimited segment is the amino acid
+      and anticodon concatenated, e.g. "chr1.tRNA1-AlaAGC" -> "Ala"
+
+    Returns ISOTYPE_UNPARSEABLE if neither branch matches.
+    """
+    parts = locus.split("-")
+    if (len(parts) >= 3 and parts[0].endswith("tRNA")
+            and len(parts[2]) == 3 and parts[2].upper() == anticodon.upper()):
+        return parts[1]
+
+    tail = parts[-1]
+    if len(tail) > 3 and tail.upper().endswith(anticodon.upper()):
+        return tail[:-3]
+
+    return ISOTYPE_UNPARSEABLE
 
 
 def _codon_from_anticodon(anticodon, n34_override=None):
@@ -244,8 +291,9 @@ def _codon_matches_isotype(codon, isotype):
 
 def build_whitelist(anticodon_map_path, i34_isotypes, q34_isotypes, out_path, log_path=None):
     df = pd.read_csv(anticodon_map_path, sep="\t")
-    id_col, iso_col, ac_col = _detect_columns(df)
-    log.info(f"Using columns: isodecoder_id='{id_col}', isotype='{iso_col}', anticodon='{ac_col}'")
+    id_col, ac_col = _detect_columns(df)
+    log.info(f"Using columns: isodecoder_id='{id_col}', anticodon='{ac_col}'")
+    log.info("isotype is derived from the locus string, not a column -- see _isotype_from_locus()")
 
     i34_set = set(i34_isotypes)
     q34_set = set(q34_isotypes)
@@ -255,14 +303,24 @@ def build_whitelist(anticodon_map_path, i34_isotypes, q34_isotypes, out_path, lo
     demoted_warnings = []
     genetic_code_rejections = []
     genetic_code_skipped = []
+    unparseable_isotype = []
 
     for _, r in df.iterrows():
         isodecoder_id = r[id_col]
-        isotype       = str(r[iso_col]).strip()
         anticodon     = str(r[ac_col]).strip().upper()
 
         if len(anticodon) != 3 or any(b not in "ACGT" for b in anticodon):
             log.warning(f"Skipping {isodecoder_id}: malformed anticodon '{anticodon}'")
+            continue
+
+        isotype = _isotype_from_locus(str(isodecoder_id), anticodon)
+        if isotype == ISOTYPE_UNPARSEABLE:
+            unparseable_isotype.append(isodecoder_id)
+            log.warning(
+                f"Skipping {isodecoder_id}: could not recover isotype from locus "
+                f"string (anticodon='{anticodon}') via either GtRNAdb naming "
+                f"convention -- neither parsing branch matched."
+            )
             continue
 
         n34 = anticodon[0]
@@ -418,6 +476,12 @@ def build_whitelist(anticodon_map_path, i34_isotypes, q34_isotypes, out_path, lo
     ]
     if missing:
         summary_lines.append(f"WARNING - codons with ZERO contributing isodecoders: {missing}")
+    if unparseable_isotype:
+        summary_lines.append(
+            f"Isotype-from-locus parsing FAILED for {len(unparseable_isotype)} loci "
+            f"(excluded from whitelist entirely): {unparseable_isotype[:10]}"
+            + (" ... (truncated)" if len(unparseable_isotype) > 10 else "")
+        )
     if dropped_stop:
         summary_lines.append(f"Dropped (stop-codon-only) isodecoders: {dropped_stop}")
     if demoted_warnings:
