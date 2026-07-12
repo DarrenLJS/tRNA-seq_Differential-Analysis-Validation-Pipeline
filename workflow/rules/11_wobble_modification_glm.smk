@@ -26,7 +26,7 @@ rule wobble_glm_i34:
         coverage = f"{SCRATCH}/deseq2_input/{{cell_line}}/pos34_coverage_matrix.tsv",
         mismatch = f"{SCRATCH}/deseq2_input/{{cell_line}}/pos34_mismatch_matrix.tsv",
         coldata  = f"{SCRATCH}/deseq2_input/{{cell_line}}/coldata.tsv",
-        whitelist = f"{STAGE2_ROOT}/references/decoding_whitelist.tsv",
+        whitelist = f"{STAGE2_ROOT}/references/{{cell_line}}/decoding_whitelist.tsv",
     output:
         results = f"{STAGE2_ROOT}/wobble_glm/{{cell_line}}/I34_glm_results.tsv",
     params:
@@ -58,7 +58,7 @@ rule wobble_glm_q34:
         coverage = f"{SCRATCH}/deseq2_input/{{cell_line}}/pos34_coverage_matrix.tsv",
         mismatch = f"{SCRATCH}/deseq2_input/{{cell_line}}/pos34_mismatch_matrix.tsv",
         coldata  = f"{SCRATCH}/deseq2_input/{{cell_line}}/coldata.tsv",
-        whitelist = f"{STAGE2_ROOT}/references/decoding_whitelist.tsv",
+        whitelist = f"{STAGE2_ROOT}/references/{{cell_line}}/decoding_whitelist.tsv",
     output:
         results = f"{STAGE2_ROOT}/wobble_glm/{{cell_line}}/Q34_glm_results_exploratory.tsv",
     params:

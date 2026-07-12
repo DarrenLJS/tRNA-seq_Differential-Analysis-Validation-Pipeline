@@ -121,9 +121,58 @@ OUTPUT
 decoding_whitelist.tsv, one row per (isodecoder_id, codon) pair, columns:
   isodecoder_id, isotype, anticodon, position34_base, bucket,
   codon, term_type, gamma_expr, notes
+
+FIXED -- isodecoder_id must be Stage-1's FINAL (post-clustering) ID,
+not the raw per-locus anticodon_map ID
+-----------------------------------------------------------------------
+anticodon_map.tsv's `locus` values are RAW GtRNAdb loci (one row per
+gene copy, e.g. "Homo_sapiens_tRNA-Lys-TTT-3-1", "...-3-2", ... "...-3-5").
+mim-tRNAseq (Stage 1) merges some of these raw loci into a single
+"isodecoder" per cell line, based on that cell line's own observed
+coverage/mismatch signal (see e.g. A549_tRNAseq_unsplitClusterInfo.txt:
+"insufficient coverage at mismatch X" / "potential mod at mismatch Y") --
+producing IDs like "Homo_sapiens_tRNA-Lys-TTT-3/5" (family 3, with the
+family-5 raw locus merged in). Every other Stage 2 file that carries an
+"isodecoder_id" column (pos34_coverage_matrix.tsv, pos34_mismatch_matrix.tsv,
+isodecoder_DESeq2_results.tsv, isodecoder_highconf_intersect.tsv, ...)
+already uses these FINAL collapsed IDs, so a whitelist built directly
+from anticodon_map's raw locus strings has ZERO overlap with them --
+confirmed on a real run: wobble_glm.R found 0/94 I34 isodecoders present
+in pos34_coverage_matrix.tsv.
+
+Critically, this clustering is DATA-DRIVEN PER CELL LINE, not a fixed
+mapping -- confirmed A549 and THP1 disagree on 41+ loci (e.g. A549 keeps
+"Arg-TCT-2", "Arg-TCT-3", "Arg-TCT-5" as three separate isodecoders;
+THP1 merges all three into one, "Arg-TCT-3/2/5"). So this whitelist can
+no longer be built once, globally -- it is now build per cell_line (see
+rule build_decoding_whitelist's {cell_line} wildcard), joining through
+that cell line's own mim-tRNAseq annotation output:
+
+  {cell_line}_tRNAseqclusterInfo.txt  -- one row per RAW locus, `parent`
+                                          column = raw-locus representative
+                                          of whatever cluster it merged into
+  Isodecoder_counts.txt               -- one row per FINAL isodecoder,
+                                          `parent` column = same raw-locus
+                                          representative value, `isodecoder`
+                                          column = the final collapsed ID
+
+raw locus --[clusterInfo parent]--> parent raw locus
+          --[Isodecoder_counts parent->isodecoder]--> FINAL isodecoder_id
+
+This join (_load_locus_to_isodecoder_map) only relabels the OUTPUT
+isodecoder_id -- isotype/anticodon parsing and all bucket/codon/term_type
+logic above still operate on the RAW locus string exactly as before,
+since that logic is genuinely a structural fact about the individual
+gene's anticodon, not something clustering changes. Raw loci with no
+entry in the cell line's clustering output (shouldn't normally happen for
+in-scope nuclear/cytoplasmic tRNAs) are skipped with a logged warning
+rather than crashing. Multiple raw loci that collapse to the same final
+isodecoder necessarily produce identical whitelist rows (same anticodon,
+same bucket, same codons) -- these are de-duplicated before writing out.
 """
 
 import sys
+import re
 import logging
 from itertools import product
 
@@ -289,11 +338,140 @@ def _codon_matches_isotype(codon, isotype):
     return (expected_aa == norm), False
 
 
-def build_whitelist(anticodon_map_path, i34_isotypes, q34_isotypes, out_path, log_path=None):
+def _strip_copy_suffix(raw_locus):
+    """
+    Strip the trailing '-<copy_number>' segment from a raw locus string
+    (Family-Copy format, e.g. "Homo_sapiens_tRNA-Lys-TTT-3-1" -> family
+    "Homo_sapiens_tRNA-Lys-TTT-3").
+    """
+    return re.sub(r"-\d+$", "", str(raw_locus))
+
+
+def _load_locus_to_isodecoder_map(unsplit_cluster_info_path, isodecoder_counts_path):
+    """
+    Build the raw-locus -> final Stage-1 isodecoder-ID map for one cell
+    line. See module docstring "FIXED" note for why this join exists and
+    why it must be cell-line-specific.
+
+    CORRECTED (second attempt) -- {cell_line}_tRNAseqclusterInfo.txt
+    (structural/alignment clustering) is NOT the right source for this
+    join: confirmed on real data that clusterInfo.txt groups loci (e.g.
+    Lys-TTT-1/2/4 into one "cluster") that Isodecoder_counts.txt does NOT
+    actually merge (they remain three separate singleton isodecoders).
+    clusterInfo.txt's `parent` column reflects a different, earlier
+    clustering pass (likely structural/covariance-model alignment),
+    unrelated to isodecoder identity.
+
+    The REAL source of isodecoder merging is
+    unsplit_cluster_info_path ({cell_line}_tRNAseq_unsplitClusterInfo.txt):
+    one row per DATA-DRIVEN merge decision (columns: Parent, Size, "Unsplit
+    transcripts", Reason -- reasons like "insufficient coverage at mismatch
+    X" / "potential mod at mismatch Y", confirming this is the per-cell-line
+    coverage/mismatch-driven collapsing described in the module docstring).
+    `Parent` is a raw locus (Family-Copy); "Unsplit transcripts" is a
+    comma-separated list of FAMILY-ONLY names (no copy suffix) that were
+    merged into Parent's family.
+
+    Verified against two real, independently-checked cases:
+      Parent=Ile-AAT-5-4, Unsplit=Ile-AAT-7,Ile-AAT-3,Ile-AAT-8,Ile-AAT-1
+        -> Isodecoder_counts.txt: isodecoder="Ile-AAT-5/1/3/7/8",
+           Single_isodecoder=False, parent="Ile-AAT-5"
+      Parent=Lys-TTT-3-1, Unsplit=Lys-TTT-5
+        -> Isodecoder_counts.txt: isodecoder="Lys-TTT-3/5",
+           Single_isodecoder=False, parent="Lys-TTT-3"
+    In both cases Isodecoder_counts.txt's `parent` column is reliable ONLY
+    for these Single_isodecoder=False (merged) rows -- for ordinary
+    Single_isodecoder=True (singleton) rows, `parent` was observed to
+    carry unrelated leftover values (e.g. many un-merged Ile-AAT-* rows
+    all showing parent="Ile-AAT-5" despite never being merged with it),
+    so it is NOT used for singleton lookups here.
+
+    Algorithm:
+      1. For each unsplitClusterInfo.txt row, build the family-group =
+         {family(Parent)} union {each Unsplit-transcript family}.
+      2. Find that group's real final ID: the Isodecoder_counts.txt row
+         with Single_isodecoder==False and parent==family(Parent) --
+         use its `isodecoder` value as ground truth (not a reconstructed
+         string) to avoid depending on exact "/"-join ordering/format.
+      3. Any family untouched by any unsplitClusterInfo.txt row defaults
+         to its own family-level name (matches ordinary singleton rows).
+      4. Defensive cross-check: every computed final ID must actually
+         exist as a real `isodecoder` value in Isodecoder_counts.txt --
+         anything that doesn't is treated as unresolved (skipped, logged)
+         rather than silently written into the whitelist.
+
+    Returns (family_to_final: dict mapping FAMILY-level locus string (not
+    raw Family-Copy locus) -> final isodecoder ID, for families touched by
+    a merge; valid_isodecoder_ids: the full set of real `isodecoder`
+    values in Isodecoder_counts.txt, used by the caller to validate any
+    family NOT in family_to_final -- such families default to their own
+    family-level name, but that default must still be checked against
+    valid_isodecoder_ids to catch anything genuinely unresolvable).
+    """
+    unsplit = pd.read_csv(unsplit_cluster_info_path, sep="\t")
+    required_unsplit_cols = {"Parent", "Unsplit transcripts"}
+    if not required_unsplit_cols.issubset(unsplit.columns):
+        raise ValueError(
+            f"{unsplit_cluster_info_path}: expected columns {required_unsplit_cols}, "
+            f"found {list(unsplit.columns)}."
+        )
+
+    counts = pd.read_csv(isodecoder_counts_path, sep="\t")
+    required_counts_cols = {"isodecoder", "Single_isodecoder", "parent"}
+    if not required_counts_cols.issubset(counts.columns):
+        raise ValueError(
+            f"{isodecoder_counts_path}: expected columns {required_counts_cols}, "
+            f"found {list(counts.columns)}."
+        )
+    merged_rows = counts[counts["Single_isodecoder"] == False]  # noqa: E712 (real bool dtype from True/False strings)
+    valid_isodecoder_ids = set(counts["isodecoder"])
+
+    family_to_final = {}
+    unresolved_merge_groups = []
+    for _, row in unsplit.iterrows():
+        parent_family = _strip_copy_suffix(row["Parent"])
+        unsplit_families = [
+            t.strip() for t in str(row["Unsplit transcripts"]).split(",") if t.strip()
+        ]
+        group_families = [parent_family] + unsplit_families
+
+        match = merged_rows[merged_rows["parent"] == parent_family]
+        if len(match) != 1:
+            unresolved_merge_groups.append(
+                (parent_family, group_families, len(match))
+            )
+            continue
+        final_id = match.iloc[0]["isodecoder"]
+        for fam in group_families:
+            family_to_final[fam] = final_id
+
+    if unresolved_merge_groups:
+        log.warning(
+            f"{len(unresolved_merge_groups)} unsplitClusterInfo.txt merge group(s) "
+            f"had != 1 matching Single_isodecoder=False row in Isodecoder_counts.txt "
+            f"(expected exactly 1) -- these families will fall through to the default "
+            f"(unmerged) lookup, which will likely fail validation below: "
+            f"{unresolved_merge_groups[:5]}"
+        )
+
+    return family_to_final, valid_isodecoder_ids
+
+
+def build_whitelist(anticodon_map_path, unsplit_cluster_info_path, isodecoder_counts_path,
+                     i34_isotypes, q34_isotypes, out_path, log_path=None):
     df = pd.read_csv(anticodon_map_path, sep="\t")
     id_col, ac_col = _detect_columns(df)
     log.info(f"Using columns: isodecoder_id='{id_col}', anticodon='{ac_col}'")
     log.info("isotype is derived from the locus string, not a column -- see _isotype_from_locus()")
+
+    family_to_final, valid_isodecoder_ids = _load_locus_to_isodecoder_map(
+        unsplit_cluster_info_path, isodecoder_counts_path
+    )
+    log.info(
+        f"Loaded {len(family_to_final)} merged-family entries and "
+        f"{len(valid_isodecoder_ids)} total valid isodecoder IDs "
+        f"({unsplit_cluster_info_path} + {isodecoder_counts_path})"
+    )
 
     i34_set = set(i34_isotypes)
     q34_set = set(q34_isotypes)
@@ -304,6 +482,7 @@ def build_whitelist(anticodon_map_path, i34_isotypes, q34_isotypes, out_path, lo
     genetic_code_rejections = []
     genetic_code_skipped = []
     unparseable_isotype = []
+    raw_locus_not_in_isodecoder_map = []
 
     for _, r in df.iterrows():
         isodecoder_id = r[id_col]
@@ -311,6 +490,34 @@ def build_whitelist(anticodon_map_path, i34_isotypes, q34_isotypes, out_path, lo
 
         if len(anticodon) != 3 or any(b not in "ACGT" for b in anticodon):
             log.warning(f"Skipping {isodecoder_id}: malformed anticodon '{anticodon}'")
+            continue
+
+        # FIX: isodecoder_id at this point is still the RAW anticodon_map
+        # locus (e.g. "Homo_sapiens_tRNA-Lys-TTT-3-1") -- relabel it to
+        # Stage-1's FINAL, cell-line-specific collapsed isodecoder ID
+        # (e.g. "Homo_sapiens_tRNA-Lys-TTT-3/5") before it's ever written
+        # to an output row. Isotype/anticodon parsing below still uses the
+        # RAW locus string (isodecoder_id) unchanged -- only the ID
+        # actually stored in `rows` is swapped, via final_isodecoder_id.
+        #
+        # Resolution: strip the raw locus down to its FAMILY (drop the
+        # copy suffix), look it up in family_to_final (families touched
+        # by an unsplitClusterInfo.txt merge); if not merged, default to
+        # the family-level name itself (ordinary singleton case). Either
+        # way, the result is cross-checked against valid_isodecoder_ids --
+        # anything that isn't a real Isodecoder_counts.txt value is
+        # skipped rather than silently written into the whitelist (this
+        # is what caught the previous, wrong join -- see module docstring).
+        family = _strip_copy_suffix(isodecoder_id)
+        final_isodecoder_id = family_to_final.get(family, family)
+        if final_isodecoder_id not in valid_isodecoder_ids:
+            raw_locus_not_in_isodecoder_map.append(isodecoder_id)
+            log.warning(
+                f"Skipping {isodecoder_id}: resolved family-level ID "
+                f"'{final_isodecoder_id}' is not a real isodecoder in "
+                f"{isodecoder_counts_path} -- likely an organelle/non-nuclear "
+                f"locus out of this whitelist's scope, or a genuine data gap."
+            )
             continue
 
         isotype = _isotype_from_locus(str(isodecoder_id), anticodon)
@@ -375,7 +582,7 @@ def build_whitelist(anticodon_map_path, i34_isotypes, q34_isotypes, out_path, lo
                     )
                     continue
                 rows.append(dict(
-                    isodecoder_id=isodecoder_id, isotype=isotype, anticodon=anticodon,
+                    isodecoder_id=final_isodecoder_id, isotype=isotype, anticodon=anticodon,
                     position34_base=n34, bucket=bucket, codon=codon,
                     term_type=term_type, gamma_expr=gamma_expr, notes=note,
                 ))
@@ -399,7 +606,7 @@ def build_whitelist(anticodon_map_path, i34_isotypes, q34_isotypes, out_path, lo
                     )
                     continue
                 rows.append(dict(
-                    isodecoder_id=isodecoder_id, isotype=isotype, anticodon=anticodon,
+                    isodecoder_id=final_isodecoder_id, isotype=isotype, anticodon=anticodon,
                     position34_base=n34, bucket=bucket, codon=codon,
                     term_type=term_type, gamma_expr=gamma_expr, notes=note,
                 ))
@@ -439,13 +646,52 @@ def build_whitelist(anticodon_map_path, i34_isotypes, q34_isotypes, out_path, lo
                     )
                     continue
                 rows.append(dict(
-                    isodecoder_id=isodecoder_id, isotype=isotype, anticodon=anticodon,
+                    isodecoder_id=final_isodecoder_id, isotype=isotype, anticodon=anticodon,
                     position34_base=n34, bucket=bucket, codon=codon,
                     term_type="canonical", gamma_expr="0",
                     notes="No modification pathway modeled for this isodecoder (out of I34/Q34 scope, or non-eligible paralog of a modified isotype).",
                 ))
 
     wl = pd.DataFrame(rows)
+
+    # FIX: multiple RAW loci can now collapse to the same final
+    # isodecoder_id (see module docstring "FIXED" note) -- this produces
+    # exact duplicate rows (same isodecoder_id/anticodon/bucket/codon/
+    # term_type) whenever the merged raw loci share an anticodon, which
+    # is the expected case (mim-tRNAseq only merges loci with near-
+    # identical mature sequence, so identical anticodon). Drop those
+    # exact duplicates first. If merged raw loci ever disagree on
+    # term_type/anticodon for the same (isodecoder_id, codon) pair --
+    # which would mean mim-tRNAseq clustered together two loci with
+    # different anticodons, a genuine data inconsistency rather than
+    # redundant rows -- log it loudly and keep only the first (sorted)
+    # occurrence, rather than silently emitting duplicate/conflicting
+    # keys that would break the one-row-per-(isodecoder_id, codon)
+    # assumption compute_delta_c.py depends on.
+    if not wl.empty:
+        n_before_dedup = len(wl)
+        wl = wl.drop_duplicates().reset_index(drop=True)
+
+        key_cols = ["isodecoder_id", "codon"]
+        conflict_mask = wl.duplicated(subset=key_cols, keep=False)
+        if conflict_mask.any():
+            conflicts = wl.loc[conflict_mask].sort_values(key_cols)
+            log.warning(
+                f"{conflict_mask.sum()} whitelist rows share an (isodecoder_id, codon) "
+                f"key with DIFFERING content after merging raw loci into final "
+                f"isodecoders -- raw loci mim-tRNAseq clustered together do not agree "
+                f"on anticodon/term_type, which should not happen. Keeping only the "
+                f"first (sorted) row per key; inspect these manually:\n"
+                + conflicts.to_string(index=False)
+            )
+            wl = wl.drop_duplicates(subset=key_cols, keep="first").reset_index(drop=True)
+
+        n_after_dedup = len(wl)
+        if n_after_dedup != n_before_dedup:
+            log.info(
+                f"Collapsed {n_before_dedup - n_after_dedup} duplicate rows produced by "
+                f"raw-locus -> final-isodecoder merging ({n_before_dedup} -> {n_after_dedup})."
+            )
 
     # Drop any row whose codon is a stop codon (SelCys / suppressor tRNAs,
     # or any structural artifact) -- Delta(c) is defined over the 61 sense
@@ -476,6 +722,13 @@ def build_whitelist(anticodon_map_path, i34_isotypes, q34_isotypes, out_path, lo
     ]
     if missing:
         summary_lines.append(f"WARNING - codons with ZERO contributing isodecoders: {missing}")
+    if raw_locus_not_in_isodecoder_map:
+        summary_lines.append(
+            f"Raw loci with no entry in this cell line's isodecoder map "
+            f"(excluded from whitelist entirely): {len(raw_locus_not_in_isodecoder_map)} "
+            f"(first 10): {raw_locus_not_in_isodecoder_map[:10]}"
+            + (" ... (truncated)" if len(raw_locus_not_in_isodecoder_map) > 10 else "")
+        )
     if unparseable_isotype:
         summary_lines.append(
             f"Isotype-from-locus parsing FAILED for {len(unparseable_isotype)} loci "
@@ -517,6 +770,8 @@ if __name__ == "__main__":
     # Snakemake `script:` directive entry point.
     build_whitelist(
         anticodon_map_path=snakemake.input.anticodon_map,
+        unsplit_cluster_info_path=snakemake.input.unsplit_cluster_info,
+        isodecoder_counts_path=snakemake.input.isodecoder_counts,
         i34_isotypes=snakemake.params.i34_isotypes,
         q34_isotypes=snakemake.params.q34_isotypes,
         out_path=snakemake.output.whitelist,

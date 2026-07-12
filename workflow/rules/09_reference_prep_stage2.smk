@@ -20,16 +20,36 @@ rule build_decoding_whitelist:
     default buckets) that Delta(c) is computed from. See
     workflow/scripts/build_decoding_whitelist.py docstring for the full
     derivation -- this is the single most load-bearing reference in Stage 2.
+
+    FIXED -- now built per {cell_line}, not once globally, AND joined
+    through the correct mim-tRNAseq output file. anticodon_map's raw
+    per-locus IDs must be relabeled to Stage 1's FINAL, cell-line-specific
+    collapsed isodecoder IDs (used by pos34_coverage_matrix.tsv,
+    isodecoder_highconf_intersect.tsv, etc.) via
+    {cell_line}_tRNAseq_unsplitClusterInfo.txt -- NOT
+    {cell_line}_tRNAseqclusterInfo.txt, which reflects a different,
+    earlier structural/alignment clustering pass unrelated to isodecoder
+    identity (confirmed on real data: clusterInfo.txt grouped loci that
+    Isodecoder_counts.txt does not actually merge). unsplitClusterInfo.txt
+    is the genuine data-driven, per-cell-line coverage/mismatch-based
+    collapsing (rows carry reasons like "insufficient coverage at
+    mismatch X" / "potential mod at mismatch Y") -- confirmed A549 and
+    THP1 disagree on 41+ loci, so a single shared whitelist cannot be
+    correct for both. See build_decoding_whitelist.py module docstring
+    "FIXED" / "CORRECTED" notes for the full derivation and worked
+    real-data examples.
     """
     input:
         anticodon_map = config["references"]["anticodon_map"],
+        unsplit_cluster_info = f"{SCRATCH}/pass1_mimtrnaseq/{{cell_line}}/_run/annotation/{{cell_line}}_tRNAseq_unsplitClusterInfo.txt",
+        isodecoder_counts = f"{SCRATCH}/pass1_mimtrnaseq/{{cell_line}}/counts/Isodecoder_counts.txt",
     output:
-        whitelist = f"{STAGE2_ROOT}/references/decoding_whitelist.tsv",
+        whitelist = f"{STAGE2_ROOT}/references/{{cell_line}}/decoding_whitelist.tsv",
     params:
         i34_isotypes = config["wobble_glm"]["i34_isotypes"],
         q34_isotypes = config["wobble_glm"]["q34_isotypes"],
     log:
-        f"{STAGE2_ROOT}/logs/09_reference_prep/build_decoding_whitelist.log",
+        f"{STAGE2_ROOT}/logs/09_reference_prep/{{cell_line}}_build_decoding_whitelist.log",
     resources:
         sge_extra = sge_extra("build_decoding_whitelist"),
     conda:

@@ -17,7 +17,7 @@
 
 rule compute_delta_c:
     input:
-        whitelist    = f"{STAGE2_ROOT}/references/decoding_whitelist.tsv",
+        whitelist    = f"{STAGE2_ROOT}/references/{{cell_line}}/decoding_whitelist.tsv",
         isodecoder_fc = f"{STAGE2_ROOT}/diff_abundance/{{cell_line}}/isodecoder_highconf_intersect.tsv",
         i34_glm      = f"{STAGE2_ROOT}/wobble_glm/{{cell_line}}/I34_glm_results.tsv",
         q34_glm      = f"{STAGE2_ROOT}/wobble_glm/{{cell_line}}/Q34_glm_results_exploratory.tsv",

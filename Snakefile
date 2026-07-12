@@ -121,7 +121,10 @@ include: "workflow/rules/17_cross_cell_line_concordance.smk"
 rule all:
     input:
         # ── Rule 09: reference prep ───────────────────────────────────────
-        f"{STAGE2_ROOT}/references/decoding_whitelist.tsv",
+        expand(
+            f"{STAGE2_ROOT}/references/{{cell_line}}/decoding_whitelist.tsv",
+            cell_line=CELL_LINES,
+        ),
         f"{STAGE2_ROOT}/references/gene_codon_usage.tsv",
         f"{STAGE2_ROOT}/references/isg_housekeeping_gene_sets.tsv",
         f"{STAGE2_ROOT}/references/watson_polysome_foldchange.tsv",
