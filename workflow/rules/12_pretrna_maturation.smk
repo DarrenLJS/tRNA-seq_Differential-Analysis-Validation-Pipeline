@@ -33,15 +33,43 @@ rule pretrna_locus_counts:
     -p --countReadPairs for the pre-tRNA pass only.
     """
     input:
-        functional_bams = expand(
+        # FIX (2026-07-XX): was expand(..., sample=SAMPLES) -- the GLOBAL
+        # 30-sample list (manifest order: all 15 A549 rows, then all 15
+        # THP1 rows), not this rule's own {cell_line} wildcard. Confirmed
+        # on real data: for cell_line=THP1, featureCounts' own output
+        # header showed A549 BAM paths in the first 15 sample-column
+        # positions. rename_sample_cols() in pretrna_locus_counts.py then
+        # zip()s those 30 columns against params.samples =
+        # samples_for(wildcards.cell_line) (only 15, correctly THP1) --
+        # zip() truncates to the shorter list, so THP1's locus_counts.tsv
+        # was silently getting A549's mature/pre-tRNA counts relabeled as
+        # THP1 sample IDs, while THP1's real BAM columns (positions 15-29,
+        # never renamed) were dropped entirely by the later
+        # melt(value_vars=samples) call. A549 happened to run correctly
+        # only because it's first in the manifest, not because the logic
+        # was right. Scoping these to samples_for(wildcards.cell_line) --
+        # the same call already used for params.samples -- guarantees the
+        # BAM list and the sample-ID list passed to rename_sample_cols are
+        # always the same length, same order, same cell line.
+        functional_bams = lambda wildcards: expand(
             f"{SCRATCH}/pass1_filters/{{sample}}/{{sample}}.functional.bam",
-            sample=SAMPLES,
+            sample=samples_for(wildcards.cell_line),
         ),
-        pretrna_bams = expand(
+        pretrna_bams = lambda wildcards: expand(
             f"{SCRATCH}/pass2_pretRNA/{{sample}}/{{sample}}.pretRNA.bam",
-            sample=SAMPLES,
+            sample=samples_for(wildcards.cell_line),
         ),
         pretrna_fasta = config["references"]["pretRNA_fasta_spliced"],
+        # FIX (2026-07-XX): needed to redirect pre-tRNA loci belonging to
+        # an isodecoder family that mim-tRNAseq's --cluster-id 0.97
+        # collapsing absorbed into another family's cluster (and which
+        # therefore has no contig of its own in the mature BAM) to the
+        # Parent family that does. Same file rule 09's
+        # build_decoding_whitelist already reads for the same underlying
+        # reason -- see pretrna_locus_counts.py's
+        # _load_absorbed_family_redirect for the real-data-confirmed
+        # column format.
+        unsplit_cluster_info = f"{SCRATCH}/pass1_mimtrnaseq/{{cell_line}}/_run/annotation/{{cell_line}}_tRNAseq_unsplitClusterInfo.txt",
     output:
         locus_counts = f"{STAGE2_ROOT}/pretrna_ratio/{{cell_line}}/locus_counts.tsv",
     params:

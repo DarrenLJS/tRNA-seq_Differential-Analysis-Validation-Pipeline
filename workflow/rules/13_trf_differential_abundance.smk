@@ -21,7 +21,19 @@ rule parse_trax_trf_classes:
     filename.
     """
     input:
-        trax_readcounts = f"{SCRATCH}/trax/{{cell_line}}/{{cell_line}}/{{cell_line}}-normalizedreadcounts.txt",
+        # FIX (2026-07-XX): was pointed at -normalizedreadcounts.txt (TRAX's
+        # DESeq2/CPM-normalized, fractional output) -- DESeq2 requires raw
+        # integer counts (it does its own normalization internally), so
+        # feeding it already-normalized floats failed every class/timepoint
+        # with "some values in assay are not integers". -readcounts.txt is
+        # TRAX's raw (unnormalized) counterpart, written unconditionally
+        # alongside the normalized file by the same processsamples.py run --
+        # already present on disk from the existing rule 07 run, no rerun
+        # needed. Confirmed integer-valued on real data (awk sweep, every
+        # row, both cell lines: A549 34540/34540, THP1 40340/40340) -- see
+        # parse_trax_tRF_classes.py for the strict integer check applied
+        # on read-in.
+        trax_readcounts = f"{SCRATCH}/trax/{{cell_line}}/{{cell_line}}/{{cell_line}}-readcounts.txt",
         coldata = f"{SCRATCH}/deseq2_input/{{cell_line}}/coldata.tsv",
     output:
         class_matrices_dir = directory(f"{STAGE2_ROOT}/trf_diff_abundance/{{cell_line}}/class_matrices"),

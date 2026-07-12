@@ -4,9 +4,17 @@ workflow/scripts/parse_trax_tRF_classes.py
 Parses TRAX's per-cell-line normalized read count table into separate
 5'-tRF / 3'-tRF / i-tRF count matrices for rule deseq2_trf.
 
-CONFIRMED against the real file (A549-normalizedreadcounts.txt /
-THP1-normalizedreadcounts.txt). Two things the original guessed-pattern
-version got wrong, both now fixed:
+CONFIRMED against the real file (A549-readcounts.txt / THP1-readcounts.txt --
+NOTE: switched from -normalizedreadcounts.txt on 2026-07-XX; that file is
+TRAX's CPM/DESeq2-normalized output and its fractional values made every
+downstream deseq2_trf.R call fail with "some values in assay are not
+integers" -- DESeq2 requires raw counts. -readcounts.txt is TRAX's raw
+counterpart, written unconditionally by the same run; no rerun of Stage 1's
+rule 07 was needed to pick it up. Confirmed integer-valued on real data
+(awk sweep over every row: A549 34540/34540, THP1 40340/40340). Row/column
+format is identical between the two files -- everything below still
+applies verbatim.) Two things the original guessed-pattern version got
+wrong, both now fixed:
 
 1. FILE FORMAT: TRAX writes this file R-style -- the header row has one
    fewer field than the data rows (feature ID column is unlabeled row
@@ -143,6 +151,55 @@ def parse_trf_classes(readcounts_path, trf_classes, min_unique_cov, out_dir):
         if sub.empty:
             log.warning(f"No rows classified as '{cls}' -- writing empty matrix (deseq2_trf.R must handle this gracefully)")
         mat = sub[sample_cols]
+
+        # FIX (2026-07-XX): source switched from -normalizedreadcounts.txt
+        # to -readcounts.txt (raw counts -- see rule 13 .smk for why).
+        # Confirmed on real data (awk sweep over every row of both
+        # A549-readcounts.txt and THP1-readcounts.txt) that this file is
+        # genuinely integer-valued -- no multi-mapping fractional splitting
+        # in this TRAX run/version. So this is a STRICT check, not a
+        # round(): any non-integer value here means the wrong file got
+        # pointed at again (e.g. -normalizedreadcounts.txt) or TRAX's
+        # output format changed, and should fail loudly rather than being
+        # silently rounded away.
+        #
+        # FIX (2026-07-XX, second pass): the first version of this check --
+        # `mat[mat != mat.round()].stack()` -- relied on undocumented,
+        # version-dependent pandas behavior. `mat[bool_mask]` correctly
+        # produces an all-NaN frame when the mask is all-False (confirmed
+        # on real data: mask.values.sum() == 0, i.e. genuinely zero
+        # non-integer cells). Older pandas silently DROPPED those NaNs in
+        # .stack(), so an all-NaN frame correctly stacked down to length 0.
+        # Pandas 3.0 removed that implicit dropna behavior -- .stack() now
+        # KEEPS the NaNs, so the same all-NaN frame stacked to the full
+        # cell count (6315/6315 on real A549 data) and the check raised on
+        # values that were NaN purely as an artifact of the masking
+        # mechanism, not because they were actually non-integer. Confirmed
+        # via pandas.__version__ == 3.0.3 in the pipeline's own conda env
+        # reproducing the false positive, vs. a different (older) pandas
+        # on the login node not reproducing it.
+        #
+        # Fixed by working on the boolean mask directly via .values (plain
+        # numpy array) instead of extracting flagged values through
+        # pandas' indexing/reshaping machinery -- .sum()/.nonzero() on a
+        # numpy bool array have no such version-dependent quirks.
+        non_integer_mask = (mat != mat.round()).values
+        n_non_integer = non_integer_mask.sum()
+        if n_non_integer > 0:
+            flagged_rows, flagged_cols = non_integer_mask.nonzero()
+            example_row = mat.index[flagged_rows[0]]
+            example_col = mat.columns[flagged_cols[0]]
+            example_val = mat.iat[flagged_rows[0], flagged_cols[0]]
+            raise RuntimeError(
+                f"Class '{cls}': {n_non_integer} non-integer value(s) found in "
+                f"'{readcounts_path}' (e.g. row='{example_row}', col='{example_col}', "
+                f"value={example_val}) -- this file was confirmed integer-valued on "
+                f"real data; a non-integer here means either the wrong file is being "
+                f"read (check for -normalizedreadcounts.txt) or TRAX's -readcounts.txt "
+                f"format has changed."
+            )
+        mat = mat.astype(int)
+
         # min_unique_cov filter -- drop features with < threshold summed
         # count across all samples (proxy for "uniquely mapping reads"
         # threshold from Stage 1's trax.min_unique_cov; TRAX's own

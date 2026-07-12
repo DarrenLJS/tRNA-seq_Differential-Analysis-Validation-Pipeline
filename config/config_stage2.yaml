@@ -149,7 +149,19 @@ resources:
 
   pretrna_ratio_lm:
     slots:        1
-    vmem_mb:      4000
+    # FIX (2026-07-XX): was 4000M -- sized for the pre-fix reality of
+    # "0 locus x timepoint rows, nothing to compute" (the locus-ID
+    # reconciliation bug in pretrna_locus_counts.py meant this rule never
+    # actually processed real data before). Now that rule 12's locus
+    # counts are correct, THP1's real run hit SGE's h_vmem ceiling:
+    # `qacct -j 56849380` showed exit_status 137 (SIGKILL), failed=46
+    # "execd enforced h_vmem limit", maxvmem=4.389G against a granted
+    # 3.906G (the old 4000M). Raised to 12000M -- ~2.7x the observed
+    # peak, not just barely over it, since A549 (which didn't OOM) and
+    # THP1 may differ further once both are re-run against real fixed
+    # data, and per-locus/per-timepoint lm() fitting cost scales with
+    # how many loci pass min_locus_coverage, which can vary by cell line.
+    vmem_mb:      12000
     runtime_min:  30
 
   trf_diff_abundance:
