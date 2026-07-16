@@ -18,9 +18,40 @@ version, not the original 3-term proposal formula):
   where, per whitelist term_type:
     canonical    -> log2( FC(i) )
     both_I       -> log2( FC(i) )                               [I34, U-ending]
-    mod_only_I   -> log2( FC(i) * f_stim_I(i) / f_ctrl_I(i) )    [I34, C/A-ending]
-    both_Q_C     -> log2( FC(i) * (f_stim_Q(i)/f_ctrl_Q(i))**kappa )  [Q34, C-ending]
-    both_Q_U     -> log2( FC(i) )                               [Q34, U-ending]
+    mod_only_I   -> log2( FC(i) * f_stim_I(i) / f_ctrl_I(i) )    [I34, C-ending]
+    both_Q_C     -> log2( FC(i) )                               [Q34, C-ending]
+    mod_only_Q   -> log2( FC(i) * (f_stim_Q(i)/f_ctrl_Q(i))**kappa )  [Q34, U-ending]
+
+  REVISED 2026-07-16 (supervisor correction + follow-up, see
+  build_decoding_whitelist.py module docstring for the full literature
+  rationale): I34's A-ending term is dropped (real but low-efficiency
+  pairing, Curran 1995), and Q34's two terms are restructured to mirror
+  I34's flat/edit-gated split exactly -- C-ending is now the flat, native
+  term (both_Q_C, no modification dependence, mirrors both_I) and
+  U-ending is now the edit-gated term (mod_only_Q, mirrors mod_only_I),
+  weighted by kappa rather than full weight 1 since Q34 detection is
+  exploratory/low-sensitivity. This is a full swap from the previous
+  version, where C-ending carried the kappa term and U-ending was flat.
+
+MUTUAL EXCLUSIVITY CONSTRAINT (formal statement, finalised 2026-07-16 --
+see build_decoding_whitelist.py module docstring for the full derivation
+and per-term rationale; restated here since this is the script that
+actually consumes term_type and must respect it):
+
+  I(i_can, c) + I(i_mod^I34, c_C) + I(i_can, i_mod^I34, c_U)
+             + I(i_can, i_mod^Q34, c_C) + I(i_mod^Q34, c_U)  <=  1
+
+  For a given isodecoder i and codon c, at most one of the five
+  term-type indicators is 1 -- i.e. exactly one of {canonical, mod_only_I,
+  both_I, both_Q_C, mod_only_Q} fires whenever whitelist.tsv has a row for
+  (i, c) at all, and all five are 0 (the whole expression is 0 <= 1,
+  trivially) when it doesn't. c_C / c_U are pinned per-term rather than a
+  shared unsubscripted c for the four modification-dependent terms,
+  because I34's edit-gated term sits on c_C while Q34's sits on c_U (and
+  vice versa for the flat terms) -- pinning the subscript makes that
+  swap visible in the notation itself, and keeps a sum across both
+  codons of one isoacceptor's box unambiguous (c_C and c_U are then two
+  distinct terms, not two hidden instances of the same symbol c).
 
 MISSING DATA HANDLING
 ----------------------
@@ -46,9 +77,12 @@ doesn't exist for that isodecoder/timepoint. Rather than crash or silently
 substitute a pseudocount that would bias small values, these terms are
 DROPPED (not imputed) with a logged note per isodecoder -- pseudocount
 handling should happen upstream in the GLM fit (rule 11), not be invented
-here. Exception: for both_Q_C at kappa=0, the term mathematically reduces
+here. Exception: for mod_only_Q at kappa=0, the term mathematically reduces
 to log2(FC(i)) regardless of f_stim/f_ctrl (ratio**0 == 1), so it does NOT
-require a GLM row at all in that case -- see both_Q_C branch below.
+require a Q34 GLM row at all in that case -- see mod_only_Q branch below.
+(both_Q_C no longer depends on f_stim/f_ctrl at all as of the 2026-07-16
+revision -- it is unconditionally flat, like both_I -- so this exception
+now applies to mod_only_Q, not both_Q_C.)
 """
 
 import logging
@@ -145,7 +179,11 @@ def compute_delta_c(whitelist_path, fc_path, i34_glm_path, q34_glm_path, kappa, 
                         skip_log.append(f"[{tp}] {codon}: {iso_id} ({term_type}) skipped -- FC non-finite or <=0 ({FC_i})")
                         continue
 
-                if term_type in ("canonical", "both_I", "both_Q_U"):
+                # REVISED 2026-07-16: both_Q_C moved into the flat-term group
+                # (native WC pairing for G34, no modification dependence --
+                # mirrors both_I). It previously carried the kappa exponent;
+                # that dependence has moved to the new mod_only_Q term below.
+                if term_type in ("canonical", "both_I", "both_Q_C"):
                     contributions.append(np.log2(FC_i))
                     n_imputed += 1 if fc_imputed else 0
                     n_observed += 0 if fc_imputed else 1
@@ -162,25 +200,31 @@ def compute_delta_c(whitelist_path, fc_path, i34_glm_path, q34_glm_path, kappa, 
                     n_imputed += 1 if fc_imputed else 0
                     n_observed += 0 if fc_imputed else 1
 
-                elif term_type == "both_Q_C":
+                elif term_type == "mod_only_Q":
+                    # REVISED 2026-07-16: new term type, replacing the old
+                    # "both_Q_U" (which was flat/no-Q-dependence). U-ending
+                    # is now the edit-gated Q34 term, mirroring mod_only_I,
+                    # but weighted by kappa (Q34 confidence dial) rather
+                    # than full weight 1 -- see build_decoding_whitelist.py
+                    # module docstring for the literature rationale.
+                    #
                     # kappa=0 short-circuit FIRST: the term mathematically
                     # reduces to log2(FC(i)) when kappa=0 ((ratio)**0 == 1)
                     # and does not depend on f_stim/f_ctrl at all -- so it
-                    # must not require a Q34 GLM row to be present. Gating
-                    # on q34_idx membership before this check was the bug:
-                    # it silently dropped kappa=0 contributions purely for
-                    # lacking GLM coverage they never needed.
+                    # must not require a Q34 GLM row to be present (same
+                    # reasoning the old both_Q_C branch used, carried over
+                    # here since this is now the term that owns kappa).
                     if kappa == 0:
                         contributions.append(np.log2(FC_i))
                         n_imputed += 1 if fc_imputed else 0
                         n_observed += 0 if fc_imputed else 1
                         continue
                     if key not in q34_idx.index:
-                        skip_log.append(f"[{tp}] {codon}: {iso_id} (both_Q_C) skipped -- no Q34 GLM result")
+                        skip_log.append(f"[{tp}] {codon}: {iso_id} (mod_only_Q) skipped -- no Q34 GLM result")
                         continue
                     f_stim, f_ctrl = q34_idx.loc[key]
                     if not (np.isfinite(f_stim) and np.isfinite(f_ctrl)) or f_stim <= 0 or f_ctrl <= 0:
-                        skip_log.append(f"[{tp}] {codon}: {iso_id} (both_Q_C) skipped -- f_stim/f_ctrl invalid ({f_stim}, {f_ctrl})")
+                        skip_log.append(f"[{tp}] {codon}: {iso_id} (mod_only_Q) skipped -- f_stim/f_ctrl invalid ({f_stim}, {f_ctrl})")
                         continue
                     contributions.append(np.log2(FC_i * (f_stim / f_ctrl) ** kappa))
                     n_imputed += 1 if fc_imputed else 0

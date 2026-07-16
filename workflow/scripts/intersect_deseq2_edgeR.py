@@ -44,7 +44,8 @@ def compute_replicate_r(counts_path, coldata_path):
     return out
 
 
-def intersect_calls(deseq2_path, edgeR_path, counts_path, coldata_path, fdr, min_replicate_r, out_path):
+def intersect_calls(deseq2_path, edgeR_path, counts_path, coldata_path, fdr, min_replicate_r,
+                     out_path, out_all_path=None):
     deseq2 = pd.read_csv(deseq2_path, sep="\t")
     edgeR  = pd.read_csv(edgeR_path, sep="\t")
 
@@ -94,6 +95,14 @@ def intersect_calls(deseq2_path, edgeR_path, counts_path, coldata_path, fdr, min
     highconf_only = merged[merged["highconf"]].copy()
     highconf_only.to_csv(out_path, sep="\t", index=False)
 
+    # FIX (feedback item 8b): also write the FULL merged frame, `highconf`
+    # boolean intact but not filtered on, so plots that need to show
+    # failing isodecoders (not just the pre-filtered pass set) have a
+    # single well-defined source rather than reconstructing this merge
+    # ad hoc. See 10_isodecoder_isoacceptor_de.smk rule docstring.
+    if out_all_path:
+        merged.to_csv(out_all_path, sep="\t", index=False)
+
     n_total = merged.shape[0]
     n_highconf = highconf_only.shape[0]
     n_exploratory = (highconf_only["qc_flag"] == "exploratory_low_replicate_r").sum()
@@ -113,4 +122,5 @@ if __name__ == "__main__":
         fdr=snakemake.params.fdr,
         min_replicate_r=snakemake.params.min_replicate_r,
         out_path=snakemake.output.highconf,
+        out_all_path=snakemake.output.highconf_all,
     )

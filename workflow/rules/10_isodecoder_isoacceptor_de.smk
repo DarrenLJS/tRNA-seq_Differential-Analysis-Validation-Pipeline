@@ -84,6 +84,16 @@ rule intersect_deseq2_edgeR:
     QC gate (diff_abundance.min_replicate_r) carried over from Stage 1 --
     timepoints failing it are flagged exploratory in the output, not
     silently dropped.
+
+    FIX (feedback item 8b): `highconf` alone is pre-filtered to only the
+    passing rows (the `highconf` boolean is all-True by construction in
+    that file), so no downstream plot reading only `highconf` can ever show
+    a failing isodecoder -- they were dropped before the file was written,
+    not filtered in the plotting script. `highconf_all` is a second output
+    carrying the FULL DESeq2 x edgeR merge (every isodecoder x timepoint
+    pair with results in both tools), with the `highconf` boolean column
+    intact but NOT filtered on, so "who passed" and "who didn't" both live
+    in one well-defined, versioned file.
     """
     input:
         deseq2_results = f"{STAGE2_ROOT}/diff_abundance/{{cell_line}}/isodecoder_DESeq2_results.tsv",
@@ -91,7 +101,8 @@ rule intersect_deseq2_edgeR:
         counts          = f"{SCRATCH}/deseq2_input/{{cell_line}}/isodecoder_counts_matrix.tsv",
         coldata         = f"{SCRATCH}/deseq2_input/{{cell_line}}/coldata.tsv",
     output:
-        highconf = f"{STAGE2_ROOT}/diff_abundance/{{cell_line}}/isodecoder_highconf_intersect.tsv",
+        highconf     = f"{STAGE2_ROOT}/diff_abundance/{{cell_line}}/isodecoder_highconf_intersect.tsv",
+        highconf_all = f"{STAGE2_ROOT}/diff_abundance/{{cell_line}}/isodecoder_highconf_intersect_all.tsv",
     params:
         fdr           = config["diff_abundance"]["fdr_threshold"],
         min_replicate_r = config["diff_abundance"]["min_replicate_r"],

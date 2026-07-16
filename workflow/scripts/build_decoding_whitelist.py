@@ -41,17 +41,38 @@ convention and the GtRNAdb table's anticodon spelling.
 
   N34 = C            -> reads codon3 = G only (strict WC, no wobble at all)
   N34 = A, unmodified -> reads codon3 = T only (WC A:T)
-  N34 = A, I34-edited -> reads codon3 in {T, C, A} (inosine wobble)
-                          ONLY for isotypes in i34_isotypes
-  N34 = G, unmodified -> reads codon3 in {C, T} (WC G:C + native G:T wobble)
-                          -- this applies to EVERY G34 isodecoder, whether or
-                          not it is Q34-eligible; unmodified wobble pairing
-                          is a baseline structural fact, not something that
+  N34 = A, I34-edited -> reads codon3 in {T, C} (inosine wobble to U,C at
+                          meaningful efficiency) ONLY for isotypes in
+                          i34_isotypes. REVISED 2026-07-16: I34:A pairing
+                          (the third leg of Crick's 1966 I34->{U,C,A} rule)
+                          is dropped -- it is structurally real but occurs
+                          at low efficiency in vivo (Curran 1995, PMC306738:
+                          three independent in vivo assays in E. coli show
+                          slow/unstable decoding at CGA, an I34:A-read
+                          codon). This whitelist tracks functionally
+                          meaningful decoding capacity, not every
+                          structurally-possible pairing.
+  N34 = G, unmodified -> reads codon3 = C ONLY (WC G:C). REVISED
+                          2026-07-16: native G34:U wobble is dropped for
+                          the same reason as I34:A above -- it is real but
+                          low-efficiency in vivo (Fields et al. 2022,
+                          Front. Mol. Biosci.: "Unmodified G34 tRNAs
+                          efficiently decode C-ending codons through
+                          traditional Watson-Crick interactions and wobble
+                          to U-ending codons with reduced efficiency").
+                          This applies to EVERY G34 isodecoder, whether or
+                          not it is Q34-eligible -- it is a baseline
+                          structural/efficiency fact, not something that
                           requires the Q34 whitelist.
-  N34 = G, Q-modified -> SAME codon set {C, T} as unmodified -- queuosine
-                          does not add a new reachable codon, it modulates
-                          decoding EFFICIENCY on the C-ending codon only.
-                          ONLY for isotypes in q34_isotypes AND N35 == T.
+  N34 = G, Q-modified -> ADDS codon3 = T as newly reachable at meaningful
+                          efficiency (Meier et al. 1985, via Fields et al.
+                          2022: Q34 tRNAs "read U- and C-ending codons
+                          equally well"). ONLY for isotypes in q34_isotypes
+                          AND N35 == T. This is a genuine reach-expansion
+                          under this whitelist's efficiency standard (unlike
+                          the pre-2026-07-16 model, which treated native
+                          G34 as already reaching both C and U and Q34 as
+                          purely efficiency-modulating).
   N34 = T, unmodified -> reads codon3 in {A, G} (WC U:A + classical Crick
                           wobble U:G). No modification pathway is modeled
                           for U34 in this pipeline -- six-box / NAR-type
@@ -61,29 +82,82 @@ convention and the GtRNAdb table's anticodon spelling.
                           bucket regardless of isotype.
 
 TERM TYPES AND GAMMA (see rule 14 / compute_delta_c.py for how these are
-consumed -- gamma is the exponent applied to the f_stim/f_ctrl ratio):
+consumed -- gamma is the exponent applied to the f_stim/f_ctrl ratio).
+REVISED 2026-07-16: Q34's two terms now mirror I34's structure exactly
+(one flat/native term, one edit-gated term), per supervisor instruction;
+only the edit-gated term's exponent differs (kappa, not full weight 1),
+since Q34 detection is exploratory/low-sensitivity (rule 11 wobble_glm.R):
 
-  canonical      gamma=0   plain log2[FC(i)]                  (default bucket)
-  both_I         gamma=0   plain log2[FC(i)]                  (I34, T-ending codon:
-                                                                 editing is strictly
-                                                                 additive, so the
-                                                                 U-ending codon is
-                                                                 decoded by the WHOLE
-                                                                 pool regardless of
-                                                                 editing status)
-  mod_only_I     gamma=1   log2[FC(i)*(f_stim/f_ctrl)]         (I34, C/A-ending codon:
-                                                                 reachable ONLY via
-                                                                 editing)
-  both_Q_C       gamma=kappa log2[FC(i)*(f_stim/f_ctrl)^kappa] (Q34, C-ending codon:
-                                                                 efficiency-modulated)
-  both_Q_U       gamma=0   plain log2[FC(i)]                   (Q34, U-ending codon:
-                                                                 no Q-dependence modeled)
+  canonical      gamma=0     plain log2[FC(i)]                  (default bucket)
+  both_I         gamma=0     plain log2[FC(i)]                  (I34, T-ending codon:
+                                                                   editing is strictly
+                                                                   additive, so the
+                                                                   U-ending codon is
+                                                                   decoded by the WHOLE
+                                                                   pool regardless of
+                                                                   editing status)
+  mod_only_I     gamma=1     log2[FC(i)*(f_stim/f_ctrl)]         (I34, C-ending codon:
+                                                                   reachable at meaningful
+                                                                   efficiency ONLY via
+                                                                   editing; A-ending
+                                                                   dropped, see above)
+  both_Q_C       gamma=0     plain log2[FC(i)]                   (Q34, C-ending codon:
+                                                                   native WC pairing for
+                                                                   G34, decoded by the
+                                                                   WHOLE pool regardless
+                                                                   of editing status --
+                                                                   mirrors both_I)
+  mod_only_Q     gamma=kappa log2[FC(i)*(f_stim/f_ctrl)^kappa]   (Q34, U-ending codon:
+                                                                   reachable at meaningful
+                                                                   efficiency ONLY via
+                                                                   Q-editing -- mirrors
+                                                                   mod_only_I, but
+                                                                   kappa-weighted rather
+                                                                   than full weight 1)
 
 Exactly one term type fires per (isodecoder, codon) pair that is structurally
 reachable at all; unreachable pairs are simply absent from the whitelist
 (this is the Sum #2 completeness property discussed in the proposal, not a
 zero-valued row -- absence, not an explicit zero, keeps the whitelist small:
 ~400+ isodecoders x 61 codons would be a mostly-empty matrix otherwise).
+
+MUTUAL EXCLUSIVITY CONSTRAINT (formal statement, finalised 2026-07-16)
+------------------------------------------------------------------------
+For a given isodecoder i, at most one of the five term-type indicators
+below is 1 for a given codon c -- i.e. i contributes to Delta(c) through
+exactly one mechanism, never two at once (no double-counting the same
+decoding capacity):
+
+  I(i_can, c) + I(i_mod^I34, c_C) + I(i_can, i_mod^I34, c_U)
+             + I(i_can, i_mod^Q34, c_C) + I(i_mod^Q34, c_U)  <=  1
+
+  I(i_can, c)                -- canonical: no fixed ending (fires on
+                                 whichever codon ordinary WC pairing, or
+                                 default-bucket wobble, reaches -- G-ending
+                                 for C34, U-ending for non-I34 A34,
+                                 C-ending for non-Q34/consensus-failing
+                                 G34, A/G-ending for T34)
+  I(i_mod^I34, c_C)           -- mod_only_I: edit-gated, fires on the
+                                 C-ending codon only
+  I(i_can, i_mod^I34, c_U)    -- both_I: flat/native, fires on the
+                                 U-ending codon only
+  I(i_can, i_mod^Q34, c_C)    -- both_Q_C: flat/native, fires on the
+                                 C-ending codon only
+  I(i_mod^Q34, c_U)           -- mod_only_Q: edit-gated, fires on the
+                                 U-ending codon only
+
+Reading the c_C / c_U subscripts: I34's edit-gated term is pinned to c_C
+and its flat term to c_U; Q34's edit-gated term is pinned to c_U and its
+flat term to c_C -- i.e. the two mirror each other with the C/U roles
+swapped, which is the direct notational consequence of I34 gating on the
+C-ending codon while Q34 (post-2026-07-16 revision) gates on the U-ending
+codon. Pinning the subscript to a specific codon per term (rather than
+using a shared unsubscripted c for the four modification-dependent terms)
+means this expression can be summed across both codons of an isoacceptor's
+box in one pass without ambiguity -- c_C and c_U are two distinct terms in
+that sum, not two hidden instantiations of the same symbol. I(i_can, c)
+is left unsubscripted deliberately: canonical isn't tied to one ending at
+all (see above), so it should not carry a C/U subscript it doesn't have.
 
 STOP CODONS / SUPPRESSOR & SELENOCYSTEINE tRNAs
 -------------------------------------------------
@@ -310,7 +384,23 @@ def _codon_from_anticodon(anticodon, n34_override=None):
     elif base34 == "A":
         pos3_unmod = {"T"}
     elif base34 == "G":
-        pos3_unmod = {"C", "T"}
+        # REVISED (per supervisor correction, 2026-07-16 meeting + follow-up):
+        # native (unmodified) G34 wobble to U-ending codons is real but occurs
+        # at reduced efficiency in vivo (Fields et al. 2022, Front. Mol.
+        # Biosci. -- "Unmodified G34 tRNAs efficiently decode C-ending codons
+        # through traditional Watson-Crick interactions and wobble to
+        # U-ending codons with reduced efficiency. Q34 tRNAs appear to read
+        # U- and C-ending codons equally well" [Meier et al. 1985]). This
+        # whitelist tracks FUNCTIONALLY MEANINGFUL decoding capacity, not
+        # every structurally-possible-but-negligible pairing (Crick's 1966
+        # rules permit G34->{C,T} unmodified; that structural permission is
+        # not in dispute, but is not the standard used here) -- so native
+        # G34 is treated as C-ending only, applied uniformly to EVERY G34
+        # isodecoder (Q34-eligible or not; see build_whitelist()'s Q34
+        # branch and the "default" bucket branch, both of which call this
+        # function). U-ending only becomes reachable at meaningful
+        # efficiency once Q34-edited -- see TERM TYPES table below.
+        pos3_unmod = {"C"}
     elif base34 == "T":
         pos3_unmod = {"A", "G"}
     else:
@@ -557,17 +647,26 @@ def build_whitelist(anticodon_map_path, unsplit_cluster_info_path, isodecoder_co
         # ---- reachable codons + term assignment ----
         if bucket == "I34":
             # Unmodified A34 reaches only T-ending (prefix computed once;
-            # I34's wobble range {T,C,A} is hardcoded below per the
-            # inosine wobble rule rather than re-derived, since inosine is
-            # not one of the four standard bases _codon_from_anticodon()
-            # switches on).
+            # I34's wobble range is hardcoded below per the inosine wobble
+            # rule rather than re-derived, since inosine is not one of the
+            # four standard bases _codon_from_anticodon() switches on).
+            #
+            # REVISED (per supervisor correction, 2026-07-16 meeting +
+            # follow-up): the A-ending (I34:A) candidate is REMOVED. I34:A
+            # pairing is structurally real (Crick 1966: I34 -> U,C,A) but
+            # occurs at low efficiency in vivo -- Curran, J.F. (1995)
+            # "Decoding with the A:I wobble pair is inefficient" (PMC306738)
+            # shows, via three independent in vivo assays in E. coli, slow/
+            # unstable ribosomal decoding at CGA (an I34:A-read codon), even
+            # though the pairing occurs. This whitelist tracks functionally
+            # meaningful decoding capacity, not every structurally-possible
+            # pairing, so I34:A is dropped rather than included as a third
+            # mod_only_I candidate.
             prefix, _pos3_unmod_unused = _codon_from_anticodon(anticodon)
             # T-ending: decoded by whole pool regardless of editing status -> both_I
             candidates = [("T", "both_I", "0",
                            "U-ending codon: decoded by entire pool (edited + unedited); editing is strictly additive for I34."),
                           ("C", "mod_only_I", "1",
-                           "Reachable only by the I34-edited fraction of the pool (inosine wobble)."),
-                          ("A", "mod_only_I", "1",
                            "Reachable only by the I34-edited fraction of the pool (inosine wobble).")]
             for pos3, term_type, gamma_expr, note in candidates:
                 codon = prefix + pos3
@@ -588,11 +687,28 @@ def build_whitelist(anticodon_map_path, unsplit_cluster_info_path, isodecoder_co
                 ))
 
         elif bucket == "Q34":
-            prefix, pos3_unmod = _codon_from_anticodon(anticodon)          # {'C','T'}
-            candidates = [("C", "both_Q_C", "kappa",
-                           "C-ending codon: reachable unmodified AND Q-modified; Q efficiency effect applied via kappa exponent on f_stim/f_ctrl."),
-                          ("T", "both_Q_U", "0",
-                           "U-ending codon: reachable regardless of Q status; no Q-dependence modeled (literature effect is C-ending-specific -- modeling simplification, see rule 09 docstring).")]
+            # REVISED (per supervisor correction, 2026-07-16 meeting +
+            # follow-up), mirroring the I34 term-type structure exactly, as
+            # instructed ("revise Q34 to something similar to I34, keep the
+            # kappa term for Q34"):
+            #   - C-ending: native Watson-Crick pairing for G34, decoded by
+            #     the WHOLE pool regardless of Q-editing status (mirrors
+            #     both_I) -> term_type "both_Q_C", gamma=0 (was "kappa").
+            #   - U-ending: native G34:U wobble is real but low-efficiency
+            #     (Fields et al. 2022, Front. Mol. Biosci. -- unmodified G34
+            #     reads U-ending "with reduced efficiency"; Q34-edited reads
+            #     U- and C-ending "equally well" [Meier et al. 1985]) -- so
+            #     U-ending is treated as reachable at meaningful efficiency
+            #     ONLY via Q-editing (mirrors mod_only_I), but weighted by
+            #     the confidence dial kappa rather than full weight 1, since
+            #     Q34 detection is exploratory/low-sensitivity (see rule 11
+            #     wobble_glm.R) -> term_type "mod_only_Q", gamma="kappa"
+            #     (was term_type "both_Q_U", gamma=0 / no Q-dependence).
+            prefix, pos3_unmod = _codon_from_anticodon(anticodon)          # {'C'} (native), U-ending is edit-gated
+            candidates = [("C", "both_Q_C", "0",
+                           "C-ending codon: native Watson-Crick pairing for G34, decoded by entire pool (edited + unedited) -- mirrors both_I."),
+                          ("T", "mod_only_Q", "kappa",
+                           "U-ending codon: reachable at meaningful efficiency only via Q34 editing (native G34:U wobble is low-efficiency, Fields et al. 2022) -- mirrors mod_only_I, weighted by kappa (Q34 confidence dial) rather than full weight.")]
             for pos3, term_type, gamma_expr, note in candidates:
                 codon = prefix + pos3
                 matches, skipped = _codon_matches_isotype(codon, isotype)
