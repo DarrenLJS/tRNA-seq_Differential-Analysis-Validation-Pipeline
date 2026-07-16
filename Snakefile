@@ -172,6 +172,14 @@ rule all:
             kappa=config["wobble_glm"]["kappa_sweep"],
         ),
 
+        # ── Rule 14: codon-ending stratification (G/C vs A/U hypothesis
+        #    test, internal to Delta(c) -- see 14_percodon_score.smk) ──────
+        expand(
+            f"{STAGE2_ROOT}/percodon_score/{{cell_line}}/codon_ending_wilcoxon_kappa{{kappa}}.tsv",
+            cell_line=CELL_LINES,
+            kappa=config["wobble_glm"]["kappa_sweep"],
+        ),
+
         # ── Rule 15: gene translational prediction ────────────────────────
         expand(
             f"{STAGE2_ROOT}/gene_prediction/{{cell_line}}/gene_translation_scores_kappa{{kappa}}.tsv",

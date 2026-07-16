@@ -101,6 +101,15 @@ trf_diff_abundance:
   trf_classes: ["5prime_tRF", "3prime_tRF", "i_tRF", "tiRNA"]
 
 # ---------------------------------------------------------------------------
+# Codon-ending stratification parameters (rule 14, codon_ending_stratification)
+# Mann-Whitney U test of Delta(c) for G/C-ending vs A/U-ending codons --
+# an internal directionality test of the central hypothesis (Section 1.6),
+# independent of the external Watson et al. validation in rule 16.
+# ---------------------------------------------------------------------------
+codon_ending_stratification:
+  alpha: 0.05
+
+# ---------------------------------------------------------------------------
 # Validation parameters (rule 16)
 # ---------------------------------------------------------------------------
 validation:
@@ -173,6 +182,15 @@ resources:
     slots:        1
     vmem_mb:      4000
     runtime_min:  30
+
+  codon_ending_stratification:
+    # Trivial cost -- reads one already-computed delta_c_kappa{kappa}.tsv
+    # (61 rows x n_timepoints) and runs a Mann-Whitney U test per
+    # timepoint. Sized like the smallest existing rules (e.g.
+    # cross_cell_line_concordance), not copied from percodon_score.
+    slots:        1
+    vmem_mb:      2000
+    runtime_min:  15
 
   gene_translation_prediction:
     slots:        1

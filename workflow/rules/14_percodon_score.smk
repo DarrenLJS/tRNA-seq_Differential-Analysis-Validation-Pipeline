@@ -31,3 +31,34 @@ rule compute_delta_c:
         "../../envs/stage2_python.yaml"
     script:
         "../scripts/compute_delta_c.py"
+
+
+# -----------------------------------------------------------------------
+# Codon-ending stratification -- direct internal test of the central
+# hypothesis (dissertation Section 1.6: G/C-ending codons favoured,
+# A/U-ending disfavoured), using only Delta(c) itself. Deliberately kept
+# in rule 14, not rule 16: rule 16 validates Delta(c) against the
+# EXTERNAL Watson et al. polysome data (still pending); this rule tests
+# whether Delta(c)'s own sign/magnitude already points the predicted
+# direction, which requires no external dataset and can be reported today.
+# Mann-Whitney U (unpaired rank-sum), NOT a paired Wilcoxon test -- G/C-
+# and A/U-ending codons are two independent groups of codons, not paired
+# observations. See codon_ending_stratification.py docstring for the full
+# rationale, including why this is done per-codon rather than per-
+# isodecoder.
+# -----------------------------------------------------------------------
+rule codon_ending_stratification:
+    input:
+        delta_c = f"{STAGE2_ROOT}/percodon_score/{{cell_line}}/delta_c_kappa{{kappa}}.tsv",
+    output:
+        summary = f"{STAGE2_ROOT}/percodon_score/{{cell_line}}/codon_ending_wilcoxon_kappa{{kappa}}.tsv",
+    log:
+        f"{STAGE2_ROOT}/logs/14_percodon_score/{{cell_line}}_codon_ending_kappa{{kappa}}.log",
+    params:
+        alpha = config["codon_ending_stratification"]["alpha"],
+    resources:
+        sge_extra = sge_extra("codon_ending_stratification"),
+    conda:
+        "../../envs/stage2_python.yaml"
+    script:
+        "../scripts/codon_ending_stratification.py"
