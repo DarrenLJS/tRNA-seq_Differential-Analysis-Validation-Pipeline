@@ -90,23 +90,28 @@ rule build_codon_usage_table:
 
 rule fetch_isg_housekeeping_lists:
     """
-    Curated ISG (Interferome) and housekeeping (Eisenberg & Levanon 2013)
-    gene ID lists for the rule-16 Fisher's exact enrichment test. Output
-    is a single long-format TSV: gene_id, gene_set ("ISG" | "housekeeping").
+    Curated ISG (Interferome v2.0) and housekeeping (Eisenberg & Levanon
+    2013) gene ID lists for the rule-16 Fisher's exact enrichment test.
+    Output is a single long-format TSV: gene_id, gene_set ("ISG" |
+    "housekeeping").
 
-    FIX-flag: Interferome requires either an account-gated bulk export or
-    per-query scraping of their web interface -- this script currently
-    targets Interferome's documented REST-ish query endpoint; confirm it
-    still returns bulk results before trusting the output. If Interferome
-    access is blocked/changed, fall back to a static, literature-cited ISG
-    list (e.g. the ISG core list from Schoggins lab overexpression
-    screens) -- flagged as a TODO in the script itself.
+    Neither source has a documented bulk-download API -- both are staged
+    manually as local export files (see fetch_isg_housekeeping_lists.py
+    docstring for the exact download procedure for each). Config
+    stage2_references.isg_list_path / housekeeping_list_path point at
+    those staged files; this rule fails loudly with instructions if
+    they're not there yet, rather than silently substituting a small
+    placeholder list mislabelled as either source.
     """
     output:
         gene_sets = f"{STAGE2_ROOT}/references/isg_housekeeping_gene_sets.tsv",
     params:
-        isg_source = config["stage2_references"]["isg_list_source"],
-        hk_source  = config["stage2_references"]["housekeeping_list_source"],
+        isg_list_path          = config["stage2_references"]["isg_list_path"],
+        housekeeping_list_path = config["stage2_references"]["housekeeping_list_path"],
+        isg_source             = config["stage2_references"]["isg_list_source"],
+        housekeeping_source    = config["stage2_references"]["housekeeping_list_source"],
+        isg_gene_col           = config["stage2_references"].get("isg_gene_col"),
+        housekeeping_gene_col  = config["stage2_references"].get("housekeeping_gene_col"),
     log:
         f"{STAGE2_ROOT}/logs/09_reference_prep/fetch_isg_housekeeping_lists.log",
     resources:
@@ -119,30 +124,38 @@ rule fetch_isg_housekeeping_lists:
 
 rule fetch_watson_polysome_data:
     """
-    Fetch and parse Watson et al. (2020) polysome-profiling data -- per
-    gene, per timepoint, translational log2 fold change (poly(I:C) vs
-    control), used by rule 16 as the validation ground truth.
+    Parse Watson, Bellora & Macias (2020, NAR) polysome-profiling data --
+    per-gene translational log2 fold change (poly(I:C) vs control), used
+    by rule 16 as the validation ground truth.
 
-    Data source: GEO GSE130618 (superseries; polysome-seq + total RNA-seq
-    subseries). Tries the GEO processed series matrix first; if that
-    doesn't directly carry a gene-level translational-efficiency column
-    (GEO superseries structure is not guaranteed to expose this cleanly),
-    falls back to parsing the ~5.7MB supplementary ZIP hosted at NAR
-    Online alongside the article, which most likely contains the authors'
-    own DESeq2 output tables.
+    CONFIRMED against the real supplementary file (2026-07-17): reads a
+    LOCAL copy of "Supplementary Excel File 3.xlsx" (from
+    gkz1060_supplemental_files.zip on the NAR article page), sheet
+    "Poly siMock + p(IC) vs siMock" -- confirmed to be the polysome-
+    fraction siMock+p(I:C) vs siMock comparison (Figure 4A / Suppl Fig
+    S3B), not the siILF3 comparisons and not the total-RNA file (File 2).
+    No download attempted -- GSE130618 provides raw SRA reads only, and
+    NAR serves the ZIP behind a signed/expiring CDN URL, so this is a
+    one-time manual staging step (see script docstring).
 
-    NEEDS A SCOPING CHECK AGAINST REAL OUTPUT before the first full run --
-    this is designed against GEO/NAR documentation, not a file in hand
-    (see Snakefile docstring / project conversation). The NAR supplementary
-    URL itself is not yet confirmed -- config stage2_references.watson_nar_supp_url
-    is a placeholder; fill it in once located, or let the GEO path succeed
-    on its own.
+    Two real structural quirks of the source sheet, both handled in the
+    script (see its docstring for detail): (1) it's two side-by-side
+    down-/up-regulated blocks, not one contiguous table; (2) it only
+    contains genes Watson et al. called significant (FDR<0.05), not a
+    full per-gene log2FC table -- report this as a methods limitation.
+
+    This is a SINGLE 4h poly(I:C) timepoint in the source data, not a
+    timecourse -- output has no timepoint column. Rule 16's
+    validate_fisher_spearman.R / kappa_sweep_summary.R validate each
+    tRNA-seq timepoint's Delta(c) prediction against this one external
+    benchmark (join on gene_id only), rather than looping over a
+    timepoint dimension that doesn't exist in the source data.
     """
     output:
         polysome_fc = f"{STAGE2_ROOT}/references/watson_polysome_foldchange.tsv",
     params:
-        geo_accession = config["stage2_references"]["watson_geo_accession"],
-        nar_supp_url  = config["stage2_references"]["watson_nar_supp_url"],
+        nar_supp_path = config["stage2_references"]["watson_nar_supp_path"],
+        sheet_name    = config["stage2_references"]["watson_nar_supp_sheet"],
         outdir        = f"{STAGE2_ROOT}/references",
     log:
         f"{STAGE2_ROOT}/logs/09_reference_prep/fetch_watson_polysome_data.log",

@@ -37,18 +37,54 @@ references:
 # Stage-2-only external reference data (fetched/built by rule 09)
 # ---------------------------------------------------------------------------
 stage2_references:
-  # GEO GSE130618 (Watson et al. 2020) — superseries, polysome-seq + total
-  # RNA-seq. rule fetch_watson_polysome_data tries the GEO processed series
-  # matrix first, falls back to the NAR supplementary ZIP if gene-level
-  # translational-efficiency fold changes aren't directly present in GEO.
-  # NEEDS SCOPING CHECK against real GEO output before first full run —
-  # see FIX note in fetch_watson_polysome_data.py.
-  watson_geo_accession: "GSE130618"
-  watson_nar_supp_url:  ""   # TODO: fill in once the exact NAR supplementary
-                              # file URL is confirmed (see rule 09 docstring)
+  # GEO GSE130618 (Watson et al. 2020) — GEO path removed. The accession's
+  # own page states "Supplementary data files not provided": only raw SRA
+  # reads and a sample-metadata series matrix are deposited there, nothing
+  # gene-level to compute a fold change from.
+  # CONFIRMED 2026-07-17 against the real gkz1060_supplemental_files.zip:
+  # the file needed is "Supplementary Excel File 3.xlsx" (polysome-
+  # associated RNA-seq results), sheet "Poly siMock + p(IC) vs siMock" --
+  # this matches Figure 4A / Suppl Fig S3B exactly. Set watson_nar_supp_path
+  # to a local copy of that .xlsx (unzip the NAR supplementary ZIP and
+  # point here directly -- do not re-derive a download URL, NAR's CDN link
+  # is signed/expiring). See fetch_watson_polysome_data.py docstring for
+  # the two structural quirks of this sheet (two side-by-side down/up
+  # blocks; FDR<0.05-significant genes only, not a full gene universe).
+  watson_nar_supp_path:  "/exports/eddie3_homes_local/s2906787/references_manual/watson_supp/Supplementary Excel File 3.xlsx"
+  watson_nar_supp_sheet: "Poly siMock + p(IC) vs siMock"
 
-  isg_list_source:          "interferome"   # Interferome DB, human, IFN-stimulated
-  housekeeping_list_source: "eisenberg_levanon_2013"
+  # ISG list. RECOMMENDED (CHANGED 2026-07-17): Interferome was found
+  # unreachable in practice, so the default source is now MSigDB's
+  # HALLMARK_INTERFERON_ALPHA_RESPONSE gene set (Liberzon et al. 2015) --
+  # 97 genes, no login/browser session needed, confirmed live:
+  # https://www.gsea-msigdb.org/gsea/msigdb/human/download_geneset.jsp?geneSetName=HALLMARK_INTERFERON_ALPHA_RESPONSE&fileType=grp
+  # This is Type I IFN-ALPHA response rather than Interferome's IFN-beta-
+  # filtered query -- both signal through ISGF3/ISRE with heavily
+  # overlapping programs, but name this substitution explicitly in the
+  # methods section (different curation source/gene count than originally
+  # proposed). If you'd rather keep using Interferome v2.0 specifically,
+  # see fetch_isg_housekeeping_lists.py docstring for both domains to try.
+  isg_list_source:          "msigdb_hallmark_interferon_alpha_response"
+  isg_list_path:            "/exports/eddie3_homes_local/s2906787/references_manual/isg_msigdb_hallmark_ifna.tsv"
+  isg_gene_col:              null   # set if the gene symbol isn't the first column
+
+  # Eisenberg & Levanon (2013), "Human housekeeping genes, revisited".
+  # CORRECTION 2026-07-17: this is NOT a journal supplementary file -- the
+  # paper's own Table 1 is only a small ~12-gene calibration subset. The
+  # full list of 3804 housekeeping genes is hosted directly by the authors
+  # at http://www.tau.ac.il/~elieis/HKG/HK_genes.txt (tab-separated,
+  # gene_symbol + RefSeq accession, NO header row -- prepend a header line
+  # "gene_symbol\trefseq_id" after downloading so this pipeline's reader
+  # picks up column names correctly). Confirmed live and fetchable, no
+  # login required.
+  # ALTERNATIVE if that's unreachable: MSigDB's HSIAO_HOUSEKEEPING_GENES
+  # (Hsiao et al. 2001, 395 genes, no login, confirmed live 2026-07-17):
+  # https://www.gsea-msigdb.org/gsea/msigdb/human/download_geneset.jsp?geneSetName=HSIAO_HOUSEKEEPING_GENES&fileType=grp
+  # Older/smaller/different methodology than Eisenberg & Levanon -- name
+  # the substitution explicitly in the methods section if used instead.
+  housekeeping_list_source: "hsiao_2001_msigdb"
+  housekeeping_list_path:   "/exports/eddie3_homes_local/s2906787/references_manual/hk_msigdb_hsiao.tsv"
+  housekeeping_gene_col:     null
 
 # ---------------------------------------------------------------------------
 # Wobble modification GLM parameters (rule 11)

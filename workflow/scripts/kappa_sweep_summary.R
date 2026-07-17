@@ -3,12 +3,20 @@
 #
 # Sweeps kappa across config wobble_glm.kappa_sweep, recomputing the
 # Spearman correlation (predicted translation score vs Watson et al.
-# observed log2FC) at each value, across all cell lines and timepoints.
-# Reports the kappa that maximizes mean |rho| (and separately, the kappa
-# that maximizes mean rho with correct sign, since a strong NEGATIVE
-# correlation would indicate a modelling error, not evidence to prefer
-# that kappa) -- if kappa=0 comes out best, that is reported as a
-# legitimate finding, not suppressed.
+# observed log2FC) at each value, across all cell lines and this
+# pipeline's own tRNA-seq timepoints. Reports the kappa that maximizes
+# mean |rho| (and separately, the kappa that maximizes mean rho with
+# correct sign, since a strong NEGATIVE correlation would indicate a
+# modelling error, not evidence to prefer that kappa) -- if kappa=0
+# comes out best, that is reported as a legitimate finding, not
+# suppressed.
+#
+# SINGLE EXTERNAL TIMEPOINT, NOT A TIMECOURSE -- see
+# validate_fisher_spearman.R header and fetch_watson_polysome_data.py
+# docstring for the full derivation. watson_fc has no timepoint column
+# (Watson et al.'s poly(I:C) stimulation was sequenced at a single 4h
+# timepoint only), so it is joined on gene_id alone; each of this
+# pipeline's own timepoints is swept against that same single benchmark.
 
 suppressMessages({
   library(dplyr)
@@ -28,11 +36,19 @@ sink(log_con, type = "message")
 
 watson_fc <- read_tsv(watson_fc_path, show_col_types = FALSE)
 
-if (!all(c("gene_id", "timepoint", "log2FC") %in% colnames(watson_fc))) {
-  cat("WARNING: watson_fc missing expected columns -- see validate_fisher_spearman.R FIX note. ",
+if (!all(c("gene_id", "log2FC") %in% colnames(watson_fc))) {
+  cat("WARNING: watson_fc missing expected columns (gene_id, log2FC) -- see ",
+      "validate_fisher_spearman.R / fetch_watson_polysome_data.py notes. ",
       "Writing empty kappa sweep summary.\n")
   write_tsv(data.frame(), out_path)
   quit(save = "no", status = 0)
+}
+
+if ("timepoint" %in% colnames(watson_fc)) {
+  cat("WARNING: watson_fc unexpectedly has a 'timepoint' column -- this script joins ",
+      "on gene_id only, per Watson et al.'s single-4h-timepoint design. If watson_fc ",
+      "now legitimately carries multiple external timepoints, update this script to ",
+      "join on both keys.\n")
 }
 
 results <- list()
@@ -45,10 +61,11 @@ for (kappa in kappa_values) {
       next
     }
     scores <- read_tsv(scores_path, show_col_types = FALSE)
-    merged <- scores %>% inner_join(watson_fc, by = c("gene_id", "timepoint"))
 
-    for (tp in unique(merged$timepoint)) {
-      sub <- merged %>% filter(timepoint == tp)
+    for (tp in unique(scores$timepoint)) {
+      sub_scores <- scores %>% filter(timepoint == tp)
+      # Join on gene_id only -- watson_fc has no timepoint dimension.
+      sub <- sub_scores %>% inner_join(watson_fc, by = "gene_id")
       if (nrow(sub) < 10) next
       sp <- suppressWarnings(cor.test(sub$predicted_translation_score, sub$log2FC, method = "spearman"))
       results[[length(results) + 1]] <- data.frame(
@@ -89,8 +106,11 @@ if (nrow(final) > 0) {
   final <- final %>% left_join(summary_by_kappa, by = "kappa")
 }
 
+final$watson_benchmark_timepoint <- "4h_single_timepoint"
 write_tsv(final, out_path)
 cat(sprintf("Wrote %d kappa sweep rows -> %s\n", nrow(final), out_path))
+cat("NOTE: 'timepoint' is this pipeline's own tRNA-seq timepoint; all rows are swept ",
+    "against the SAME single 4h Watson et al. external benchmark.\n")
 
 sink(type = "message")
 sink(type = "output")
