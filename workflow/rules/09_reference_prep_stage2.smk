@@ -102,7 +102,18 @@ rule fetch_isg_housekeeping_lists:
     those staged files; this rule fails loudly with instructions if
     they're not there yet, rather than silently substituting a small
     placeholder list mislabelled as either source.
+
+    FIX (2026-07-18): both source lists (MSigDB HALLMARK_INTERFERON_ALPHA_
+    RESPONSE and the Eisenberg & Levanon housekeeping list) are gene-
+    SYMBOL keyed, but the output column was named/populated as "gene_id"
+    with those raw symbols -- silently degenerating rule 16's Fisher's
+    exact test (left_join against Ensembl-ID-keyed gene_translation_scores
+    left gene_set as NA for every row, producing a "degenerate 2x2 table"
+    skip every time, with no error). Now maps symbols to Ensembl gene IDs
+    via references.ensembl_gtf, same as fetch_watson_polysome_data.py.
     """
+    input:
+        gtf = config["references"]["ensembl_gtf"],
     output:
         gene_sets = f"{STAGE2_ROOT}/references/isg_housekeeping_gene_sets.tsv",
     params:
@@ -138,6 +149,16 @@ rule fetch_watson_polysome_data:
     NAR serves the ZIP behind a signed/expiring CDN URL, so this is a
     one-time manual staging step (see script docstring).
 
+    FIX (2026-07-18): the source sheet's "Gene_id" column is actually
+    HGNC gene SYMBOLS (e.g. AASDHPPT, ABCA8), not Ensembl gene IDs --
+    confirmed via rule 16's validate_fisher_spearman.R returning n=0
+    overlapping genes at every timepoint against gene_translation_scores
+    (which uses Ensembl IDs like ENSG00000189060). Now maps symbols to
+    Ensembl gene IDs using references.ensembl_gtf's gene_id/gene_name
+    attributes (the same GTF build_codon_usage_table.py already parses),
+    so the output's gene_id column is Ensembl-ID-keyed like the rest of
+    the pipeline and actually joins in rule 16.
+
     Two real structural quirks of the source sheet, both handled in the
     script (see its docstring for detail): (1) it's two side-by-side
     down-/up-regulated blocks, not one contiguous table; (2) it only
@@ -151,6 +172,8 @@ rule fetch_watson_polysome_data:
     benchmark (join on gene_id only), rather than looping over a
     timepoint dimension that doesn't exist in the source data.
     """
+    input:
+        gtf = config["references"]["ensembl_gtf"],
     output:
         polysome_fc = f"{STAGE2_ROOT}/references/watson_polysome_foldchange.tsv",
     params:

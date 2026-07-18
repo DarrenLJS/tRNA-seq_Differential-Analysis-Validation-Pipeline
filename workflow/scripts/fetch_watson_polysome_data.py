@@ -47,14 +47,31 @@ TWO STRUCTURAL QUIRKS OF THIS SHEET, HANDLED BELOW
 
 OUTPUT
 ------
-watson_polysome_foldchange.tsv, columns: gene_id, log2FC, padj,
-source ("NAR_supplementary_File3_polysome"). No timepoint column --
+watson_polysome_foldchange.tsv, columns: gene_id, gene_symbol, log2FC,
+padj, source ("NAR_supplementary_File3_polysome"). No timepoint column --
 Watson et al.'s poly(I:C) stimulation is a single 4h timepoint (see
 validate_fisher_spearman.R / kappa_sweep_summary.R for how rule 16
 handles this against this pipeline's own 2h/4h/8h timepoints).
+
+GENE ID FIX (2026-07-18)
+-------------------------
+The source sheet's "Gene_id" column is actually HGNC gene SYMBOLS
+(e.g. AASDHPPT, ABCA8), not Ensembl gene IDs, despite the column name.
+Confirmed via rule 16 returning n=0 overlapping genes at every timepoint
+when joined directly against gene_translation_scores_kappa*.tsv (which
+is keyed on Ensembl gene IDs, e.g. ENSG00000189060). This script now
+builds a symbol -> Ensembl gene_id map from references.ensembl_gtf (the
+same GTF build_codon_usage_table.py already parses) and maps the Watson
+symbols onto it before writing output, so gene_id here means the same
+thing it means everywhere else in this pipeline. The original symbol is
+kept as gene_symbol for traceability. Symbols that don't map (not found
+in the GTF, or ambiguous) are dropped and counted/logged rather than
+silently included with a null gene_id.
 """
 
 import logging
+import gzip
+import re
 
 import pandas as pd
 
@@ -93,7 +110,56 @@ def _parse_block(raw, cols, data_start_row):
     return df
 
 
-def parse_watson_supplementary(xlsx_path, sheet_name=SHEET_NAME):
+def build_symbol_to_ensembl_map(gtf_path):
+    """Parse a gzipped Ensembl GTF's 'gene' feature lines into a
+    gene_name (symbol) -> gene_id (Ensembl, version stripped) map.
+
+    Ambiguous symbols (same gene_name mapping to >1 distinct gene_id)
+    are dropped from the map entirely rather than resolved arbitrarily,
+    and counted/logged -- silently picking one Ensembl ID for an
+    ambiguous symbol would be a bigger correctness risk than dropping
+    those few genes from the validation.
+    """
+    gene_id_re = re.compile(r'gene_id "([^"]+)"')
+    gene_name_re = re.compile(r'gene_name "([^"]+)"')
+
+    symbol_to_ids = {}
+    with gzip.open(gtf_path, "rt") as fh:
+        for line in fh:
+            if line.startswith("#"):
+                continue
+            fields = line.rstrip("\n").split("\t")
+            if len(fields) < 9 or fields[2] != "gene":
+                continue
+            attrs = fields[8]
+            id_match = gene_id_re.search(attrs)
+            name_match = gene_name_re.search(attrs)
+            if not id_match or not name_match:
+                continue
+            gene_id = id_match.group(1).split(".")[0]  # strip version suffix
+            gene_name = name_match.group(1)
+            symbol_to_ids.setdefault(gene_name, set()).add(gene_id)
+
+    ambiguous = {sym: ids for sym, ids in symbol_to_ids.items() if len(ids) > 1}
+    if ambiguous:
+        log.warning(
+            f"{len(ambiguous)} gene symbol(s) in the GTF map to more than one "
+            "Ensembl gene_id -- these are dropped from the symbol->Ensembl map "
+            "rather than resolved arbitrarily."
+        )
+
+    symbol_to_ensembl = {
+        sym: next(iter(ids)) for sym, ids in symbol_to_ids.items() if len(ids) == 1
+    }
+    log.info(
+        f"Built symbol->Ensembl map from {gtf_path}: "
+        f"{len(symbol_to_ensembl)} unambiguous symbols "
+        f"({len(ambiguous)} ambiguous symbols dropped)"
+    )
+    return symbol_to_ensembl
+
+
+def parse_watson_supplementary(xlsx_path, symbol_to_ensembl, sheet_name=SHEET_NAME):
     raw_df = pd.read_excel(xlsx_path, sheet_name=sheet_name, header=None)
     raw = raw_df.values.tolist()
 
@@ -121,11 +187,28 @@ def parse_watson_supplementary(xlsx_path, sheet_name=SHEET_NAME):
         )
 
     combined = combined[["gene_id", "log2FC", "padj"]].drop_duplicates(subset="gene_id")
+
+    # The sheet's "gene_id" column is actually an HGNC symbol (see module
+    # docstring) -- rename it and map onto real Ensembl gene IDs so this
+    # output joins correctly against the rest of the pipeline.
+    combined = combined.rename(columns={"gene_id": "gene_symbol"})
+    combined["gene_id"] = combined["gene_symbol"].map(symbol_to_ensembl)
+
+    n_unmapped = combined["gene_id"].isna().sum()
+    if n_unmapped:
+        log.warning(
+            f"{n_unmapped} of {len(combined)} Watson et al. gene symbols did not "
+            "map to an Ensembl gene_id via the GTF (not found, or ambiguous) -- "
+            "dropped from output rather than kept with a null gene_id."
+        )
+    combined = combined.dropna(subset=["gene_id"])
+
+    combined = combined[["gene_id", "gene_symbol", "log2FC", "padj"]]
     combined["source"] = "NAR_supplementary_File3_polysome"
     return combined
 
 
-def fetch_watson_polysome_data(xlsx_path, out_path, sheet_name=SHEET_NAME):
+def fetch_watson_polysome_data(xlsx_path, gtf_path, out_path, sheet_name=SHEET_NAME):
     if not xlsx_path:
         raise RuntimeError(
             "config stage2_references.watson_nar_supp_path is empty. Stage "
@@ -134,7 +217,8 @@ def fetch_watson_polysome_data(xlsx_path, out_path, sheet_name=SHEET_NAME):
             "https://academic.oup.com/nar/article/48/1/116/5614571) locally and "
             "point stage2_references.watson_nar_supp_path at it."
         )
-    result = parse_watson_supplementary(xlsx_path, sheet_name)
+    symbol_to_ensembl = build_symbol_to_ensembl_map(gtf_path)
+    result = parse_watson_supplementary(xlsx_path, symbol_to_ensembl, sheet_name)
 
     result.to_csv(out_path, sep="\t", index=False)
     log.info(f"Wrote Watson et al. polysome data ({len(result)} rows) -> {out_path}")
@@ -151,6 +235,7 @@ def fetch_watson_polysome_data(xlsx_path, out_path, sheet_name=SHEET_NAME):
 if __name__ == "__main__":
     fetch_watson_polysome_data(
         xlsx_path=snakemake.params.nar_supp_path,
+        gtf_path=snakemake.input.gtf,
         out_path=snakemake.output.polysome_fc,
         sheet_name=snakemake.params.sheet_name,
     )

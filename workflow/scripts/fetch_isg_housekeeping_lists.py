@@ -74,17 +74,75 @@ housekeeping_list_path)
 
 OUTPUT
 ------
-Long-format TSV, columns [gene_id, gene_set], gene_set in
+Long-format TSV, columns [gene_id, gene_symbol, gene_set], gene_set in
 {"ISG", "housekeeping"}.
+
+GENE ID FIX (2026-07-18)
+-------------------------
+Both source lists are gene-SYMBOL keyed (MSigDB HALLMARK_INTERFERON_
+ALPHA_RESPONSE and the Eisenberg & Levanon housekeeping list both use
+gene_symbol as their identifier), but this previously flowed straight
+into an output column named "gene_id" -- silently degenerating rule 16's
+Fisher's exact test (the join against Ensembl-ID-keyed
+gene_translation_scores left gene_set as NA for every row). Symbols are
+now mapped to Ensembl gene IDs via references.ensembl_gtf (same GTF
+build_codon_usage_table.py / fetch_watson_polysome_data.py already
+parse). Unmapped/ambiguous symbols are dropped and counted/logged.
 """
 
 import logging
 import os
+import gzip
+import re
 
 import pandas as pd
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 log = logging.getLogger(__name__)
+
+
+def build_symbol_to_ensembl_map(gtf_path):
+    """Parse a gzipped Ensembl GTF's 'gene' feature lines into a
+    gene_name (symbol) -> gene_id (Ensembl, version stripped) map.
+    Ambiguous symbols (same gene_name -> >1 distinct gene_id) are
+    dropped rather than resolved arbitrarily.
+    """
+    gene_id_re = re.compile(r'gene_id "([^"]+)"')
+    gene_name_re = re.compile(r'gene_name "([^"]+)"')
+
+    symbol_to_ids = {}
+    with gzip.open(gtf_path, "rt") as fh:
+        for line in fh:
+            if line.startswith("#"):
+                continue
+            fields = line.rstrip("\n").split("\t")
+            if len(fields) < 9 or fields[2] != "gene":
+                continue
+            attrs = fields[8]
+            id_match = gene_id_re.search(attrs)
+            name_match = gene_name_re.search(attrs)
+            if not id_match or not name_match:
+                continue
+            gene_id = id_match.group(1).split(".")[0]
+            gene_name = name_match.group(1)
+            symbol_to_ids.setdefault(gene_name, set()).add(gene_id)
+
+    ambiguous = {sym: ids for sym, ids in symbol_to_ids.items() if len(ids) > 1}
+    if ambiguous:
+        log.warning(
+            f"{len(ambiguous)} gene symbol(s) in the GTF map to more than one "
+            "Ensembl gene_id -- dropped from the symbol->Ensembl map."
+        )
+
+    symbol_to_ensembl = {
+        sym: next(iter(ids)) for sym, ids in symbol_to_ids.items() if len(ids) == 1
+    }
+    log.info(
+        f"Built symbol->Ensembl map from {gtf_path}: "
+        f"{len(symbol_to_ensembl)} unambiguous symbols "
+        f"({len(ambiguous)} ambiguous symbols dropped)"
+    )
+    return symbol_to_ensembl
 
 
 def _read_gene_list(path, gene_col, label, instructions):
@@ -155,7 +213,7 @@ def fetch_gene_sets(
     isg_list_path, housekeeping_list_path,
     isg_gene_col, housekeeping_gene_col,
     isg_source, housekeeping_source,
-    out_path,
+    gtf_path, out_path,
 ):
     isg_genes = _read_gene_list(
         isg_list_path, isg_gene_col, f"ISG ({isg_source})", ISG_INSTRUCTIONS
@@ -165,14 +223,45 @@ def fetch_gene_sets(
         f"Housekeeping ({housekeeping_source})", HOUSEKEEPING_INSTRUCTIONS,
     )
 
-    rows = [{"gene_id": g, "gene_set": "ISG"} for g in isg_genes]
-    rows += [{"gene_id": g, "gene_set": "housekeeping"} for g in hk_genes]
+    symbol_to_ensembl = build_symbol_to_ensembl_map(gtf_path)
+
+    def _map_genes(symbols, label):
+        mapped = []
+        n_unmapped = 0
+        for sym in symbols:
+            ens = symbol_to_ensembl.get(sym)
+            if ens is None:
+                n_unmapped += 1
+                continue
+            mapped.append((ens, sym))
+        if n_unmapped:
+            log.warning(
+                f"{label}: {n_unmapped} of {len(symbols)} gene symbols did not map "
+                "to an Ensembl gene_id via the GTF (not found, or ambiguous) -- "
+                "dropped."
+            )
+        return mapped
+
+    isg_mapped = _map_genes(isg_genes, f"ISG ({isg_source})")
+    hk_mapped = _map_genes(hk_genes, f"Housekeeping ({housekeeping_source})")
+
+    rows = [
+        {"gene_id": ens, "gene_symbol": sym, "gene_set": "ISG"}
+        for ens, sym in isg_mapped
+    ]
+    rows += [
+        {"gene_id": ens, "gene_symbol": sym, "gene_set": "housekeeping"}
+        for ens, sym in hk_mapped
+    ]
     out = pd.DataFrame(rows)
     out.to_csv(out_path, sep="\t", index=False)
 
     log.info(f"Wrote {len(out)} gene-set rows -> {out_path}")
-    log.info(f"ISG: {len(isg_genes)} genes (source: {isg_source})")
-    log.info(f"Housekeeping: {len(hk_genes)} genes (source: {housekeeping_source})")
+    log.info(f"ISG: {len(isg_mapped)} genes mapped to Ensembl (source: {isg_source})")
+    log.info(
+        f"Housekeeping: {len(hk_mapped)} genes mapped to Ensembl "
+        f"(source: {housekeeping_source})"
+    )
     if isg_source != "interferome":
         log.warning(
             f"ISG source is '{isg_source}', not the originally proposed Interferome "
@@ -196,5 +285,6 @@ if __name__ == "__main__":
         housekeeping_gene_col=snakemake.params.housekeeping_gene_col,
         isg_source=snakemake.params.isg_source,
         housekeeping_source=snakemake.params.housekeeping_source,
+        gtf_path=snakemake.input.gtf,
         out_path=snakemake.output.gene_sets,
     )
