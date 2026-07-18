@@ -16,6 +16,7 @@ dependencies:
   - scipy>=1.11        # intersect_deseq2_edgeR.py (pearsonr), cross_cell_line_concordance.py (spearmanr),
                         # codon_ending_stratification.py (mannwhitneyu)
   - requests>=2.31      # fetch_isg_housekeeping_lists.py, fetch_watson_polysome_data.py
+  - openpyxl>=3.1        # fetch_watson_polysome_data.py (pd.read_excel engine for .xlsx)
 
   # ── CLI tools invoked via subprocess ──────────────────────────────────
   - gffread              # build_codon_usage_table.py (CDS extraction)

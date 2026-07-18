@@ -35,6 +35,8 @@ CAVEATS TO CHECK AT FIRST REAL RUN
 import subprocess
 import shutil
 import logging
+import gzip
+import os
 from collections import Counter
 
 import pandas as pd
@@ -57,9 +59,30 @@ def extract_cds_fasta(genome_fasta, gtf, out_fasta):
             "(bioconda channel) -- it is required by build_codon_usage_table.py "
             "and is not currently declared in Stage 1's shared environment file."
         )
-    cmd = ["gffread", "-x", out_fasta, "-g", genome_fasta, gtf]
+    # gffread 0.12.9 does not reliably auto-decompress .gtf.gz input --
+    # passing the gzipped file directly causes it to read raw compressed
+    # bytes as text (silent corruption: "unexpected tab character" /
+    # "invalid start coordinate" warnings, then a hard parse error).
+    # Decompress to a plain-text temp GTF first and feed that to gffread.
+    gtf_for_gffread = gtf
+    tmp_gtf = None
+    if gtf.endswith(".gz"):
+        tmp_gtf = os.path.join(
+            os.path.dirname(out_fasta) or ".",
+            "_tmp_" + os.path.basename(gtf)[:-3],
+        )
+        log.info(f"Decompressing {gtf} -> {tmp_gtf} (gffread .gz support unreliable)")
+        with gzip.open(gtf, "rb") as f_in, open(tmp_gtf, "wb") as f_out:
+            shutil.copyfileobj(f_in, f_out)
+        gtf_for_gffread = tmp_gtf
+
+    cmd = ["gffread", "-x", out_fasta, "-g", genome_fasta, gtf_for_gffread]
     log.info(f"Running: {' '.join(cmd)}")
-    subprocess.run(cmd, check=True)
+    try:
+        subprocess.run(cmd, check=True)
+    finally:
+        if tmp_gtf is not None and os.path.exists(tmp_gtf):
+            os.remove(tmp_gtf)
 
 
 def parse_fasta(path):
