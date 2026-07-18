@@ -234,8 +234,17 @@ resources:
     runtime_min:  60
 
   validation:
+    # FIX (2026-07-18): was 4000M -- validate_fisher_spearman (A549 job
+    # 56967156.2, THP1 job 56967157.1) both hit SGE's h_vmem ceiling:
+    # qacct showed exit_status 137 (SIGKILL), failed=46 "execd enforced
+    # h_vmem limit", maxvmem=4.396G against a granted 3.906G (old 4000M).
+    # Script itself has no bug (confirmed via source review); tidyverse
+    # read_tsv/dplyr join overhead on gene_translation_scores_kappa*.tsv
+    # exceeded the old ceiling. Raised to 10000M, comfortably above the
+    # observed peak, matching the sizing rationale used for the earlier
+    # pretrna_ratio_lm OOM fix above.
     slots:        1
-    vmem_mb:      4000
+    vmem_mb:      10000
     runtime_min:  30
 
   cross_cell_line_concordance:
