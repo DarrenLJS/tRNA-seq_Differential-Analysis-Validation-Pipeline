@@ -55,7 +55,20 @@ results <- list()
 
 for (kappa in kappa_values) {
   for (cl in cell_lines) {
-    scores_path <- file.path(stage2_root, "gene_prediction", cl, sprintf("gene_translation_scores_kappa%s.tsv", kappa))
+    # FIX (2026-07-19): sprintf("%s", kappa) on a numeric silently drops the
+    # trailing ".0" for whole-number kappas (R's as.character(0.0) == "0",
+    # as.character(1.0) == "1"), producing paths like ".../kappa0.tsv" and
+    # ".../kappa1.tsv" that never exist -- the real files are
+    # ".../kappa0.0.tsv" and ".../kappa1.0.tsv" (Python's str(0.0) == "0.0",
+    # which is what actually generated them, via Snakemake's own wildcard
+    # expansion in rule validate_kappa_sweep / expand()). file.exists() just
+    # returned FALSE for those two paths and the loop silently `next`-ed
+    # past them with only a `cat()` note, not an error -- so kappa=0.0 and
+    # kappa=1.0 were completely missing from every past
+    # kappa_sweep_summary.tsv, while 0.1/0.2/0.3/0.5/0.7 (never whole
+    # numbers) were unaffected. %.1f formatting matches the actual
+    # filenames for every value in config wobble_glm.kappa_sweep.
+    scores_path <- file.path(stage2_root, "gene_prediction", cl, sprintf("gene_translation_scores_kappa%.1f.tsv", kappa))
     if (!file.exists(scores_path)) {
       cat(sprintf("Missing gene scores file for kappa=%s, cell_line=%s: %s\n", kappa, cl, scores_path))
       next
