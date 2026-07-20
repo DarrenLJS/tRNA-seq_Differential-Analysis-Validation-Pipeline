@@ -4,6 +4,17 @@
 # reproduces in both A549 and THP1. Compares rule 10 (isodecoder DE), rule
 # 11 (I34 GLM), rule 14 (Delta(c) ranking), and rule 15 (gene prediction
 # ranking) across cell lines.
+#
+# FIX (2026-07-20): isodecoder DE / I34 GLM matching now joins on
+# locus-family overlap rather than exact isodecoder_id string equality,
+# since mim-tRNAseq's per-cell-line data-driven clustering means the same
+# underlying locus can collapse into differently-named isodecoders in each
+# cell line (see cross_cell_line_concordance.py module docstring for the
+# full rationale and worked example). Two new detail outputs
+# (isodecoder_de_detail, i34_glm_detail) report every matched pair at full
+# resolution -- including match_type (exact_id vs locus_overlap) and
+# ambiguous_match flags -- so the concordance percentages in `summary` are
+# auditable rather than a single opaque number.
 # =============================================================================
 
 rule cross_cell_line_concordance:
@@ -26,6 +37,8 @@ rule cross_cell_line_concordance:
         ),
     output:
         summary = f"{STAGE2_ROOT}/concordance/cross_cell_line_concordance_summary.tsv",
+        isodecoder_de_detail = f"{STAGE2_ROOT}/concordance/isodecoder_DE_matched_detail.tsv",
+        i34_glm_detail       = f"{STAGE2_ROOT}/concordance/I34_glm_matched_detail.tsv",
     params:
         cell_lines = CELL_LINES,
         fdr = config["diff_abundance"]["fdr_threshold"],
