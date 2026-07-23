@@ -112,8 +112,36 @@ wobble_glm:
   kappa_sweep:   [0.0, 0.1, 0.2, 0.3, 0.5, 0.7, 1.0]
 
 # ---------------------------------------------------------------------------
+# Count-based modification score parameters (rule 10 extension / rule 14
+# delta_c_v2) -- see build_anticodon_count_matrix.py docstring for the
+# full derivation and caveats.
+#
+# I34_SIGNAL: well-supported single-letter literature signature --
+# inosine at an A34 position is read by RT predominantly as guanosine, so
+# an A34 isodecoder's mismatch_G proportion is used as the I34 count
+# proxy. Not kappa-weighted (full weight, confirmatory -- mirrors rule 11).
+#
+# Q34_SIGNAL: NO comparable clean single-letter consensus exists in the
+# literature (consistent with rule 11's framing of Q34 detection as
+# near-background, ~1% ceiling). Default here sums ALL non-reference
+# letters at a G34 position (A+T+C) as the modification proxy -- the same
+# "any mismatch" logic rule 11's binomial GLM already uses for Q34,
+# just scoped to Q34-eligible isodecoders specifically. This is a
+# deliberate, flagged ASSUMPTION, not an established fact -- override
+# q34_signal_bases here (e.g. to a single letter) if a specific
+# misincorporation signature is confirmed. Q34 counts are kappa-weighted
+# (wobble_glm.kappa_sweep, same values/meaning as the rate-based branch).
+# ---------------------------------------------------------------------------
+count_mod_score:
+  i34_ref_base:     "A"
+  i34_signal_base:  "G"
+  q34_ref_base:     "G"
+  q34_signal_bases: ["A", "T", "C"]
+
+# ---------------------------------------------------------------------------
 # Differential abundance parameters (rule 10)
 # ---------------------------------------------------------------------------
+
 diff_abundance:
   fdr_threshold:        0.05
   min_replicate_r:      0.95   # same QC gate as Stage 1; timepoints below
@@ -186,6 +214,25 @@ resources:
     slots:        1
     vmem_mb:      8000
     runtime_min:  60
+
+  # ---- count-based modification score branch (rule 10 extension) ----
+  build_isodecoder_mismatch_table:
+    # Reads the raw per-(isodecoder, pos, type, sample) mismatch file
+    # (unsummed, unlike Stage 1's own collate_mismatch.py) -- sized like
+    # Stage 1's build_mismatch_matrices, not copied from a bigger rule.
+    slots:        1
+    vmem_mb:      4000
+    runtime_min:  30
+
+  build_anticodon_count_matrix:
+    # Also used for build_codon_count_matrix (same order-of-magnitude
+    # cost: a groupby/pivot over an already-small table, no new I/O of
+    # the raw mismatch file). Swept over kappa_sweep x cell_line, so kept
+    # deliberately cheap rather than shared with the heavier DESeq2 rules.
+    slots:        1
+    vmem_mb:      4000
+    runtime_min:  20
+
 
   pretrna_locus_counts:
     slots:        4

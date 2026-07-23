@@ -27,6 +27,17 @@ suppressMessages({
 kappa_values <- snakemake@params[["kappa_values"]]
 cell_lines   <- snakemake@params[["cell_lines"]]
 stage2_root  <- snakemake@params[["stage2_root"]]
+# NEW: score_version selects which gene_translation_scores file pattern to
+# read -- "v1" (rate/GLM-based Delta(c), rule 14 compute_delta_c) or "v2"
+# (count/FC-based delta_c_v2, rule 14 compute_delta_c_v2). Required, no
+# default -- every call site (rule 16's validate_kappa_sweep AND its new
+# validate_kappa_sweep_v2 sibling) must say explicitly which version it's
+# sweeping, rather than one of them silently relying on an implicit default
+# that happens to match.
+score_version  <- snakemake@params[["score_version"]]
+if (!score_version %in% c("v1", "v2")) {
+  stop(sprintf("score_version must be 'v1' or 'v2', got: '%s'", score_version))
+}
 watson_fc_path <- snakemake@input[["watson_fc"]]
 out_path     <- snakemake@output[["sweep_summary"]]
 
@@ -68,7 +79,14 @@ for (kappa in kappa_values) {
     # kappa_sweep_summary.tsv, while 0.1/0.2/0.3/0.5/0.7 (never whole
     # numbers) were unaffected. %.1f formatting matches the actual
     # filenames for every value in config wobble_glm.kappa_sweep.
-    scores_path <- file.path(stage2_root, "gene_prediction", cl, sprintf("gene_translation_scores_kappa%.1f.tsv", kappa))
+    scores_path <- file.path(
+      stage2_root, "gene_prediction", cl,
+      if (score_version == "v2") {
+        sprintf("gene_translation_scores_v2_kappa%.1f.tsv", kappa)
+      } else {
+        sprintf("gene_translation_scores_kappa%.1f.tsv", kappa)
+      }
+    )
     if (!file.exists(scores_path)) {
       cat(sprintf("Missing gene scores file for kappa=%s, cell_line=%s: %s\n", kappa, cl, scores_path))
       next
@@ -120,6 +138,7 @@ if (nrow(final) > 0) {
 }
 
 final$watson_benchmark_timepoint <- "4h_single_timepoint"
+final$score_version <- score_version
 write_tsv(final, out_path)
 cat(sprintf("Wrote %d kappa sweep rows -> %s\n", nrow(final), out_path))
 cat("NOTE: 'timepoint' is this pipeline's own tRNA-seq timepoint; all rows are swept ",

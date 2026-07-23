@@ -13,6 +13,12 @@
 # handling -- this script has been unit-tested against every hand-traced
 # case from the formula derivation (Ala, Ile 3-way split, Asp, Cys/Ile-TAT
 # traps) before being wired in here.
+#
+# EXTENDED: also computes delta_c_v2, the count/FC-based companion score
+# (rule 10's codon_highconf_intersect_kappa{kappa}.tsv, built from real
+# anticodon/codon-level counts rather than whitelist-weighted term sums).
+# Both versions are computed unconditionally and both feed rule 16/17 --
+# v2 does not replace v1. See compute_delta_c_v2.py docstring.
 # =============================================================================
 
 rule compute_delta_c:
@@ -33,6 +39,31 @@ rule compute_delta_c:
         "../scripts/compute_delta_c.py"
 
 
+rule compute_delta_c_v2:
+    """
+    Count/FC-based companion to compute_delta_c above -- reshapes rule
+    10's codon-level DESeq2+edgeR high-confidence intersect into the same
+    (timepoint, codon, delta_c, ..., kappa) schema so rule 16/17 can
+    consume both versions uniformly. No whitelist term-type weighting
+    here (already baked into the counts by rule 10's
+    build_anticodon_count_matrix / build_codon_count_matrix). See
+    compute_delta_c_v2.py docstring for the missing-data handling
+    difference from v1 (no FC=1 imputation here).
+    """
+    input:
+        codon_highconf = f"{STAGE2_ROOT}/diff_abundance/{{cell_line}}/codon_highconf_intersect_kappa{{kappa}}.tsv",
+    output:
+        delta_c_v2 = f"{STAGE2_ROOT}/percodon_score/{{cell_line}}/delta_c_v2_kappa{{kappa}}.tsv",
+    log:
+        f"{STAGE2_ROOT}/logs/14_percodon_score/{{cell_line}}_v2_kappa{{kappa}}.log",
+    resources:
+        sge_extra = sge_extra("percodon_score"),
+    conda:
+        "../../envs/stage2_python.yaml"
+    script:
+        "../scripts/compute_delta_c_v2.py"
+
+
 # -----------------------------------------------------------------------
 # Codon-ending stratification -- direct internal test of the central
 # hypothesis (dissertation Section 1.6: G/C-ending codons favoured,
@@ -46,6 +77,10 @@ rule compute_delta_c:
 # observations. See codon_ending_stratification.py docstring for the full
 # rationale, including why this is done per-codon rather than per-
 # isodecoder.
+#
+# NOTE: runs on delta_c (v1) only, not delta_c_v2 -- not extended here
+# since it wasn't asked for; delta_c_v2's own directionality can be
+# spot-checked the same way later if useful.
 # -----------------------------------------------------------------------
 rule codon_ending_stratification:
     input:

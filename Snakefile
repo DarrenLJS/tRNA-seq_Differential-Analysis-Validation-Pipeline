@@ -143,6 +143,34 @@ rule all:
             cell_line=CELL_LINES,
         ),
 
+        # ── Rule 10 extension: count-based modification score branch ──────
+        expand(
+            f"{STAGE2_ROOT}/count_mod_score/{{cell_line}}/isodecoder_mismatch_table.tsv",
+            cell_line=CELL_LINES,
+        ),
+        expand(
+            f"{STAGE2_ROOT}/count_mod_score/{{cell_line}}/anticodon_count_table_kappa{{kappa}}.tsv",
+            cell_line=CELL_LINES,
+            kappa=config["wobble_glm"]["kappa_sweep"],
+        ),
+        expand(
+            f"{STAGE2_ROOT}/diff_abundance/{{cell_line}}/anticodon_highconf_intersect_kappa{{kappa}}.tsv",
+            cell_line=CELL_LINES,
+            kappa=config["wobble_glm"]["kappa_sweep"],
+        ),
+        expand(
+            f"{STAGE2_ROOT}/diff_abundance/{{cell_line}}/codon_highconf_intersect_kappa{{kappa}}.tsv",
+            cell_line=CELL_LINES,
+            kappa=config["wobble_glm"]["kappa_sweep"],
+        ),
+
+        # ── Rule 14: per-codon score, count-based companion (delta_c_v2) ──
+        expand(
+            f"{STAGE2_ROOT}/percodon_score/{{cell_line}}/delta_c_v2_kappa{{kappa}}.tsv",
+            cell_line=CELL_LINES,
+            kappa=config["wobble_glm"]["kappa_sweep"],
+        ),
+
         # ── Rule 11: wobble modification GLM ──────────────────────────────
         expand(
             f"{STAGE2_ROOT}/wobble_glm/{{cell_line}}/I34_glm_results.tsv",
@@ -186,13 +214,25 @@ rule all:
             cell_line=CELL_LINES,
             kappa=config["wobble_glm"]["kappa_sweep"],
         ),
+        expand(
+            f"{STAGE2_ROOT}/gene_prediction/{{cell_line}}/gene_translation_scores_v2_kappa{{kappa}}.tsv",
+            cell_line=CELL_LINES,
+            kappa=config["wobble_glm"]["kappa_sweep"],
+        ),
 
         # ── Rule 16: validation ────────────────────────────────────────────
         expand(
             f"{STAGE2_ROOT}/validation/{{cell_line}}/validation_summary.tsv",
             cell_line=CELL_LINES,
         ),
+        expand(
+            f"{STAGE2_ROOT}/validation/{{cell_line}}/validation_summary_v2.tsv",
+            cell_line=CELL_LINES,
+        ),
         f"{STAGE2_ROOT}/validation/kappa_sweep_summary.tsv",
+        f"{STAGE2_ROOT}/validation/kappa_sweep_summary_v2.tsv",
 
         # ── Rule 17: cross-cell-line concordance (final gate) ─────────────
         f"{STAGE2_ROOT}/concordance/cross_cell_line_concordance_summary.tsv",
+        f"{STAGE2_ROOT}/concordance/cross_cell_line_concordance_summary_v2.tsv",
+
